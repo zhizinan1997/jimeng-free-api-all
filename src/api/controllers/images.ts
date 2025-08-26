@@ -7,7 +7,7 @@ import { getCredit, receiveCredit, request } from "./core.ts";
 import logger from "@/lib/logger.ts";
 
 const DEFAULT_ASSISTANT_ID = "513695";
-export const DEFAULT_MODEL = "jimeng-3.0";
+export const DEFAULT_MODEL = "jimeng-3.1";
 const DRAFT_VERSION = "3.0.2";
 const MODEL_MAP = {
   "jimeng-3.1": "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
