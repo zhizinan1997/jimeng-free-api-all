@@ -6,7 +6,7 @@
 ![](https://img.shields.io/github/forks/llm-red-team/jimeng-free-api.svg)
 ![](https://img.shields.io/docker/pulls/vinlic/jimeng-free-api.svg)
 
-支持即梦超强图像生成能力（目前官方每日赠送 66 积分，可生成 66 次），零配置部署，多路 token 支持。
+支持即梦超强图像生成能力，最新图像3.1模型，视频生成模型（目前官方每日赠送 66 积分，可生成 66 次），零配置部署，多路 token 支持。
 
 与 OpenAI 接口完全兼容。
 
