@@ -85,6 +85,8 @@
 
 ## 接口列表
 
+### 对话补全（绘制图像&生成视频）
+
 目前支持与 openai 兼容的 `/v1/chat/completions` 接口，可自行使用与 openai 或其他兼容的客户端接入接口，模型名称包括jimeng/jimeng-video-3.0/jimeng-video-3.0-pro/jimeng-video-2.0/jimeng-video-2.0-pro。使用jimeng模型时为对话补全中生成图像（即梦3.1模型），使用其他模型时默认为视频生成。
 
 ### 视频生成
