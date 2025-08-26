@@ -75,7 +75,7 @@
 
 4.  **启动 Docker 容器**
     ```bash
-    docker run -it -d --init --name jimeng-free-api -p 8001:8000 -e TZ=Asia/Shanghai jimeng-free-api-all:latest
+    docker run -it -d --init --name jimeng-free-api-all -p 8001:8000 -e TZ=Asia/Shanghai jimeng-free-api-all:latest
     ```
     *   `-p 8001:8000`: 将宿主机的 `8001` 端口映射到容器内部的 `8000` 端口。您可以根据需要修改 `8001`。
     *   `-e TZ=Asia/Shanghai`: 设置容器内的时区为上海，确保日志和时间戳正确。
@@ -83,7 +83,7 @@
 
 ## 接口列表
 
-目前支持与 openai 兼容的 `/v1/chat/completions` 接口，可自行使用与 openai 或其他兼容的客户端接入接口，模型名称包括jimeng/jimeng-video-3.0/jimeng-video-3.0-pro-jimeng-video-2.0/jimeng-video-2.0-pro。使用jimeng模型时为对话补全，使用其他模型时默认为视频生成。
+目前支持与 openai 兼容的 `/v1/chat/completions` 接口，可自行使用与 openai 或其他兼容的客户端接入接口，模型名称包括jimeng/jimeng-video-3.0/jimeng-video-3.0-pro/jimeng-video-2.0/jimeng-video-2.0-pro。使用jimeng模型时为对话补全，使用其他模型时默认为视频生成。
 
 ### 视频生成
 
