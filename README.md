@@ -49,9 +49,11 @@
 
 使用chat接口调用视频生成模型，chat接口中使用视频生成模型
 ```text
-生成鸟儿飞翔在蓝天的视频”
+生成一个小孩吃西瓜的视频，坐在瓜地里”
 ```
-<img width="1471" height="654" alt="image" src="https://github.com/user-attachments/assets/2e72b254-4f69-4832-aeec-075452fdd289" />
+<img width="1501" height="819" alt="image" src="https://github.com/user-attachments/assets/e98dbafa-9d04-4707-8a7a-4e75da705f03" />
+<img width="1909" height="1030" alt="image" src="https://github.com/user-attachments/assets/9f7cccba-3c8f-400a-a466-75d9b24b827e" />
+
 
 
 ## Docker 部署
