@@ -274,7 +274,7 @@ export async function request(
  * 上传文件
  *
  * @param refreshToken 用于刷新access_token的refresh_token
- * @param fileUrl 文件URL或BASE64数据
+ * @param fileUrl 文件URL或BASE64数据或本地路径
  * @param isVideoImage 是否是用于视频图像
  * @returns 上传结果，包含image_uri
  */
@@ -282,81 +282,249 @@ export async function uploadFile(
   refreshToken: string,
   fileUrl: string,
   isVideoImage: boolean = false
-) {
-  // 预检查远程文件URL可用性
-  await checkFileUrl(fileUrl);
-
-  let filename, fileData, mimeType;
-  // 如果是BASE64数据则直接转换为Buffer
+): Promise<{ image_uri: string; uri: string }> {
+  // 只显示类型信息，不显示完整的base64内容
+  const fileDesc = fileUrl.startsWith('data:') 
+    ? `base64图片(${fileUrl.length}字符)` 
+    : fileUrl.substring(0, 100);
+  logger.info(`开始上传文件: ${fileDesc}`);
+  
+  // 获取文件内容
+  let fileData: Buffer;
+  let filename: string;
+  
   if (util.isBASE64Data(fileUrl)) {
-    mimeType = util.extractBASE64DataFormat(fileUrl);
-    const ext = mime.getExtension(mimeType);
+    // BASE64 数据
+    const mimeType = util.extractBASE64DataFormat(fileUrl);
+    const ext = mime.getExtension(mimeType || 'image/png');
     filename = `${util.uuid()}.${ext}`;
     fileData = Buffer.from(util.removeBASE64DataHeader(fileUrl), "base64");
-  }
-  // 下载文件到内存，如果您的服务器内存很小，建议考虑改造为流直传到下一个接口上，避免停留占用内存
-  else {
-    filename = path.basename(fileUrl);
-    ({ data: fileData } = await axios.get(fileUrl, {
+  } else if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
+    // 网络URL
+    await checkFileUrl(fileUrl);
+    filename = path.basename(fileUrl).split('?')[0] || `${util.uuid()}.jpg`;
+    const response = await axios.get(fileUrl, {
       responseType: "arraybuffer",
-      // 100M限制
       maxContentLength: FILE_MAX_SIZE,
-      // 60秒超时
       timeout: 60000,
-    }));
-  }
-
-  // 获取文件的MIME类型
-  mimeType = mimeType || mime.getType(filename);
-  
-  // 构建FormData
-  const formData = new FormData();
-  const blob = new Blob([fileData], { type: mimeType });
-  formData.append('file', blob, filename);
-  
-  // 获取上传凭证
-  const uploadProofUrl = 'https://imagex.bytedanceapi.com/';
-  const proofResult = await request(
-    'POST',
-    '/mweb/v1/get_upload_image_proof',
-    refreshToken,
-    {
-      data: {
-        scene: isVideoImage ? 'video_cover' : 'aigc_image',
-        file_name: filename,
-        file_size: fileData.length,
-      }
+    });
+    fileData = Buffer.from(response.data);
+  } else {
+    // 本地文件路径
+    const fs = await import('fs');
+    const absolutePath = path.resolve(fileUrl);
+    if (!fs.existsSync(absolutePath)) {
+      throw new APIException(EX.API_FILE_URL_INVALID, `文件不存在: ${absolutePath}`);
     }
+    filename = path.basename(fileUrl);
+    fileData = fs.readFileSync(absolutePath);
+  }
+  
+  logger.info(`文件大小: ${fileData.length} bytes, 文件名: ${filename}`);
+  
+  // 获取上传令牌
+  const uploadAuth = await request(
+    'POST',
+    '/mweb/v1/get_upload_token?aid=513695&da_version=3.2.2&aigc_features=app_lip_sync',
+    refreshToken,
+    { data: { scene: 2 } }
   );
   
-  if (!proofResult || !proofResult.proof_info) {
-    throw new APIException(EX.API_REQUEST_FAILED, '获取上传凭证失败');
+  if (!uploadAuth || !uploadAuth.access_key_id) {
+    throw new APIException(EX.API_REQUEST_FAILED, '获取上传凭证失败，账号可能已掉线');
   }
   
-  // 上传文件
-  const { proof_info } = proofResult;
-  const uploadResult = await axios.post(
-    uploadProofUrl,
-    formData,
+  logger.info('获取上传令牌成功');
+  
+  // 计算文件CRC32 - 注意：需要转换为无符号整数再转十六进制
+  // crc-32 包返回有符号整数，需要 >>> 0 转换为无符号
+  const crc32Value = util.crc32(fileData);
+  const imageCrc32 = (crc32Value >>> 0).toString(16);
+  logger.info(`文件CRC32: ${imageCrc32}`);
+  
+  // 准备获取上传凭证的请求参数
+  const getUploadImageProofRequestParams = {
+    Action: 'ApplyImageUpload',
+    FileSize: fileData.length,
+    ServiceId: 'tb4s082cfz',
+    Version: '2018-08-01',
+    s: util.generateRandomString({ length: 11, charset: 'alphanumeric' }),
+  };
+  
+  // 生成AWS签名请求头
+  const requestHeadersInfo = await generateAWSAuthorizationHeader(
+    uploadAuth.access_key_id,
+    uploadAuth.secret_access_key,
+    uploadAuth.session_token,
+    'cn-north-1',
+    'imagex',
+    'GET',
+    getUploadImageProofRequestParams,
+  );
+  
+  // 获取图片上传凭证
+  const uploadImgRes = await axios.get(
+    'https://imagex.bytedanceapi.com/?' + new URLSearchParams(getUploadImageProofRequestParams as any).toString(),
+    { headers: requestHeadersInfo, timeout: 30000 }
+  );
+  
+  if (uploadImgRes.data?.['Response ']?.hasOwnProperty('Error')) {
+    throw new APIException(EX.API_REQUEST_FAILED, uploadImgRes.data['Response ']['Error']['Message']);
+  }
+  
+  const UploadAddress = uploadImgRes.data.Result.UploadAddress;
+  const uploadImgUrl = `https://${UploadAddress.UploadHosts[0]}/upload/v1/${UploadAddress.StoreInfos[0].StoreUri}`;
+  
+  logger.info(`上传图片到: ${uploadImgUrl}`);
+  
+  // 上传图片
+  const imageUploadRes = await axios.post(
+    uploadImgUrl,
+    fileData,
     {
       headers: {
-        ...proof_info.headers,
-        'Content-Type': 'multipart/form-data',
+        Authorization: UploadAddress.StoreInfos[0].Auth,
+        'Content-Crc32': imageCrc32,
+        'Content-Type': 'application/octet-stream',
       },
-      params: proof_info.query_params,
       timeout: 60000,
     }
   );
   
-  if (!uploadResult || uploadResult.status !== 200) {
-    throw new APIException(EX.API_REQUEST_FAILED, '上传文件失败');
+  if (imageUploadRes.data.code !== 2000) {
+    throw new APIException(EX.API_REQUEST_FAILED, imageUploadRes.data.message || '上传文件失败');
   }
   
-  // 返回上传结果
-  return {
-    image_uri: proof_info.image_uri,
-    uri: proof_info.image_uri,
+  logger.info('图片上传成功，提交上传');
+  
+  // 提交上传
+  const commitImgParams = {
+    Action: 'CommitImageUpload',
+    FileSize: fileData.length,
+    ServiceId: 'tb4s082cfz',
+    Version: '2018-08-01',
+  };
+  
+  const commitImgContent = {
+    SessionKey: UploadAddress.SessionKey,
+  };
+  
+  const commitImgHead = await generateAWSAuthorizationHeader(
+    uploadAuth.access_key_id,
+    uploadAuth.secret_access_key,
+    uploadAuth.session_token,
+    'cn-north-1',
+    'imagex',
+    'POST',
+    commitImgParams,
+    commitImgContent,
+  );
+  
+  const commitImg = await axios.post(
+    'https://imagex.bytedanceapi.com/?' + new URLSearchParams(commitImgParams as any).toString(),
+    commitImgContent,
+    {
+      headers: {
+        ...commitImgHead,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    }
+  );
+  
+  if (commitImg.data?.['Response ']?.hasOwnProperty('Error')) {
+    throw new APIException(EX.API_REQUEST_FAILED, commitImg.data['Response ']['Error']['Message']);
   }
+  
+  const imageUri = commitImg.data.Result.Results[0].Uri;
+  logger.info(`文件上传成功，URI: ${imageUri}`);
+  
+  return {
+    image_uri: imageUri,
+    uri: imageUri,
+  };
+}
+
+/**
+ * 生成AWS授权请求头
+ */
+async function generateAWSAuthorizationHeader(
+  accessKeyID: string,
+  secretAccessKey: string,
+  sessionToken: string,
+  region: string,
+  service: string,
+  requestMethod: string,
+  requestParams: any,
+  requestBody: any = {},
+): Promise<Record<string, string>> {
+  const crypto = await import('crypto');
+  
+  // 获取当前ISO时间
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
+  const amzDay = amzDate.substring(0, 8);
+  
+  // 构建请求头
+  const requestHeaders: Record<string, string> = {
+    'X-Amz-Date': amzDate,
+    'X-Amz-Security-Token': sessionToken,
+  };
+  
+  if (Object.keys(requestBody).length > 0) {
+    requestHeaders['X-Amz-Content-Sha256'] = crypto
+      .createHash('sha256')
+      .update(JSON.stringify(requestBody))
+      .digest('hex');
+  }
+  
+  // 生成签名
+  const credentialString = `${amzDay}/${region}/${service}/aws4_request`;
+  
+  const signedHeaders = Object.keys(requestHeaders)
+    .map(k => k.toLowerCase())
+    .sort()
+    .join(';');
+  
+  const canonicalHeaders = Object.keys(requestHeaders)
+    .sort()
+    .map(k => `${k.toLowerCase()}:${requestHeaders[k]}`)
+    .join('\n') + '\n';
+  
+  const bodyHash = Object.keys(requestBody).length > 0
+    ? crypto.createHash('sha256').update(JSON.stringify(requestBody)).digest('hex')
+    : crypto.createHash('sha256').update('').digest('hex');
+  
+  const canonicalRequest = [
+    requestMethod.toUpperCase(),
+    '/',
+    new URLSearchParams(requestParams).toString(),
+    canonicalHeaders,
+    signedHeaders,
+    bodyHash,
+  ].join('\n');
+  
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialString,
+    crypto.createHash('sha256').update(canonicalRequest).digest('hex'),
+  ].join('\n');
+  
+  // 生成签名密钥
+  const kDate = crypto.createHmac('sha256', 'AWS4' + secretAccessKey).update(amzDay).digest();
+  const kRegion = crypto.createHmac('sha256', kDate).update(region).digest();
+  const kService = crypto.createHmac('sha256', kRegion).update(service).digest();
+  const signingKey = crypto.createHmac('sha256', kService).update('aws4_request').digest();
+  
+  const signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+  
+  const authorization = `AWS4-HMAC-SHA256 Credential=${accessKeyID}/${credentialString}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  
+  return {
+    ...requestHeaders,
+    'Authorization': authorization,
+  };
 }
 
 /**

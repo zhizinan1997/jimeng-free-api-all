@@ -18,6 +18,7 @@ export default {
         .validate("body.height", v => _.isUndefined(v) || _.isFinite(v))
         .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
         .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
+        .validate("body.filePath", v => _.isUndefined(v) || _.isString(v))
         .validate("headers.authorization", _.isString);
       // refresh_token切分
       const tokens = tokenSplit(request.headers.authorization);
@@ -31,6 +32,7 @@ export default {
         height,
         sample_strength: sampleStrength,
         response_format,
+        filePath,
       } = request.body;
       const responseFormat = _.defaultTo(response_format, "url");
       const imageUrls = await generateImages(model, prompt, {
@@ -38,6 +40,7 @@ export default {
         height,
         sampleStrength,
         negativePrompt,
+        filePath,
       }, token);
       let data = [];
       if (responseFormat == "b64_json") {

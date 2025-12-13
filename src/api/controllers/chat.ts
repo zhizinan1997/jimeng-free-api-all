@@ -40,6 +40,65 @@ function isVideoModel(model: string) {
 }
 
 /**
+ * 从消息中提取图片URL列表
+ * 支持 OpenAI 格式的多模态消息
+ * 
+ * @param messages 消息数组
+ * @returns 图片URL或Base64数据数组
+ */
+function extractImagesFromMessages(messages: any[]): string[] {
+  const images: string[] = [];
+  
+  for (const message of messages) {
+    if (!message.content) continue;
+    
+    // 如果 content 是数组（OpenAI 多模态格式）
+    if (Array.isArray(message.content)) {
+      for (const item of message.content) {
+        if (item.type === 'image_url' && item.image_url) {
+          // 支持 { type: "image_url", image_url: { url: "..." } } 格式
+          const url = item.image_url.url || item.image_url;
+          if (url && typeof url === 'string') {
+            images.push(url);
+          }
+        } else if (item.type === 'image' && item.url) {
+          // 支持 { type: "image", url: "..." } 格式
+          images.push(item.url);
+        }
+      }
+    }
+  }
+  
+  logger.info(`从消息中提取到 ${images.length} 张图片`);
+  return images;
+}
+
+/**
+ * 从消息中提取文本提示词
+ * 
+ * @param message 消息对象
+ * @returns 提示词文本
+ */
+function extractTextFromMessage(message: any): string {
+  if (!message.content) return "";
+  
+  // 如果是字符串，直接返回
+  if (typeof message.content === 'string') {
+    return message.content;
+  }
+  
+  // 如果是数组，提取所有文本部分
+  if (Array.isArray(message.content)) {
+    return message.content
+      .filter((item: any) => item.type === 'text')
+      .map((item: any) => item.text)
+      .join('\n');
+  }
+  
+  return "";
+}
+
+/**
  * 同步对话补全
  *
  * @param messages 参考gpt系列消息格式，多轮对话请完整提供上下文
@@ -58,20 +117,28 @@ export async function createCompletion(
       throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "消息不能为空");
 
     const { model, width, height } = parseModel(_model);
-    logger.info(messages);
+    // 只打印消息数量，不打印完整内容（可能包含大量base64图片数据）
+    logger.info(`收到 ${messages.length} 条消息`);
+    
+    // 提取消息中的图片
+    const imageUrls = extractImagesFromMessages(messages);
+    // 提取最后一条消息的文本
+    const lastMessage = messages[messages.length - 1];
+    const promptText = extractTextFromMessage(lastMessage);
 
     // 检查是否为视频生成请求
     if (isVideoModel(_model)) {
       try {
         // 视频生成
-        logger.info(`开始生成视频，模型: ${_model}`);
+        logger.info(`开始生成视频，模型: ${_model}，图片数量: ${imageUrls.length}`);
         const videoUrl = await generateVideo(
           _model,
-          messages[messages.length - 1].content,
+          promptText || lastMessage.content,
           {
             width,
             height,
             resolution: "720p", // 默认分辨率
+            filePaths: imageUrls, // 传递提取的图片作为首尾帧
           },
           refreshToken
         );
@@ -122,12 +189,13 @@ export async function createCompletion(
       }
     } else {
       // 图像生成
-      const imageUrls = await generateImages(
+      const generatedImageUrls = await generateImages(
         model,
-        messages[messages.length - 1].content,
+        promptText || lastMessage.content,
         {
           width,
           height,
+          filePath: imageUrls.length > 0 ? imageUrls[0] : "", // 第一张图片作为参考图
         },
         refreshToken
       );
@@ -141,7 +209,7 @@ export async function createCompletion(
             index: 0,
             message: {
               role: "assistant",
-              content: imageUrls.reduce(
+              content: generatedImageUrls.reduce(
                 (acc, url, i) => acc + `![image_${i}](${url})\n`,
                 ""
               ),
@@ -182,7 +250,14 @@ export async function createCompletionStream(
 ) {
   return (async () => {
     const { model, width, height } = parseModel(_model);
-    logger.info(messages);
+    // 只打印消息数量，不打印完整内容（可能包含大量base64图片数据）
+    logger.info(`收到 ${messages.length} 条消息`);
+    
+    // 提取消息中的图片
+    const imageUrls = extractImagesFromMessages(messages);
+    // 提取最后一条消息的文本
+    const lastMessage = messages[messages.length - 1];
+    const promptText = extractTextFromMessage(lastMessage);
 
     const stream = new PassThrough();
 
@@ -287,8 +362,8 @@ export async function createCompletionStream(
       
       generateVideo(
         _model,
-        messages[messages.length - 1].content,
-        { width, height, resolution: "720p" },
+        promptText || lastMessage.content,
+        { width, height, resolution: "720p", filePaths: imageUrls },
         refreshToken
       )
         .then((videoUrl) => {
@@ -408,13 +483,13 @@ export async function createCompletionStream(
 
       generateImages(
         model,
-        messages[messages.length - 1].content,
-        { width, height },
+        promptText || lastMessage.content,
+        { width, height, filePath: imageUrls.length > 0 ? imageUrls[0] : "" },
         refreshToken
       )
-        .then((imageUrls) => {
-          for (let i = 0; i < imageUrls.length; i++) {
-            const url = imageUrls[i];
+        .then((generatedUrls) => {
+          for (let i = 0; i < generatedUrls.length; i++) {
+            const url = generatedUrls[i];
             stream.write(
               "data: " +
                 JSON.stringify({
@@ -428,7 +503,7 @@ export async function createCompletionStream(
                         role: "assistant",
                         content: `![image_${i}](${url})\n`,
                       },
-                      finish_reason: i < imageUrls.length - 1 ? null : "stop",
+                      finish_reason: i < generatedUrls.length - 1 ? null : "stop",
                     },
                   ],
                 }) +
@@ -443,7 +518,7 @@ export async function createCompletionStream(
                 object: "chat.completion.chunk",
                 choices: [
                   {
-                    index: imageUrls.length + 1,
+                    index: generatedUrls.length + 1,
                     delta: {
                       role: "assistant",
                       content: "图像生成完成！",

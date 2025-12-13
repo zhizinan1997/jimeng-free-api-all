@@ -12,7 +12,7 @@ const DRAFT_VERSION = "3.2.8";
 const MODEL_MAP = {
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
-  "jimeng-video-2.0": "dreamina_ic_generate_video_model_vgfm_lite",
+  "jimeng-video-s2.0": "dreamina_ic_generate_video_model_vgfm_lite",
   "jimeng-video-2.0-pro": "dreamina_ic_generate_video_model_vgfm1.0"
 };
 
@@ -58,19 +58,39 @@ export async function generateVideo(
   let end_frame_image = undefined;
   
   if (filePaths && filePaths.length > 0) {
+    // 统计图片类型而不是显示完整内容
+    const imageTypes = filePaths.map(p => p.startsWith('data:') ? 'base64' : (p.startsWith('http') ? 'url' : 'file'));
+    logger.info(`接收到 ${filePaths.length} 张图片用于首尾帧，类型: ${JSON.stringify(imageTypes)}`);
     let uploadIDs: string[] = [];
-    for (const filePath of filePaths) {
-      if (!filePath) continue;
+    
+    for (let i = 0; i < filePaths.length; i++) {
+      const filePath = filePaths[i];
+      if (!filePath) {
+        logger.warn(`第 ${i + 1} 张图片路径为空，跳过`);
+        continue;
+      }
       
       try {
+        // 只显示路径类型，不显示完整内容
+        const pathDesc = filePath.startsWith('data:') ? `base64图片(${filePath.length}字符)` : filePath.substring(0, 80);
+        logger.info(`开始上传第 ${i + 1} 张图片: ${pathDesc}`);
         const uploadResult = await uploadFile(refreshToken, filePath);
         if (uploadResult && uploadResult.image_uri) {
+          logger.info(`第 ${i + 1} 张图片上传成功，URI: ${uploadResult.image_uri}`);
           uploadIDs.push(uploadResult.image_uri);
+        } else {
+          logger.error(`第 ${i + 1} 张图片上传返回无效结果`);
         }
       } catch (error) {
-        logger.error(`上传图片失败: ${error.message}`);
+        logger.error(`第 ${i + 1} 张图片上传失败: ${error.message}`);
+        // 如果是第一张图片上传失败，抛出错误
+        if (i === 0) {
+          throw new APIException(EX.API_REQUEST_FAILED, `首帧图片上传失败: ${error.message}`);
+        }
       }
     }
+    
+    logger.info(`成功上传 ${uploadIDs.length} 张图片: ${JSON.stringify(uploadIDs)}`);
     
     if (uploadIDs[0]) {
       first_frame_image = {
@@ -85,6 +105,7 @@ export async function generateVideo(
         uri: uploadIDs[0],
         width: width,
       };
+      logger.info(`设置首帧图片: ${uploadIDs[0]}`);
     }
     
     if (uploadIDs[1]) {
@@ -100,7 +121,10 @@ export async function generateVideo(
         uri: uploadIDs[1],
         width: width,
       };
+      logger.info(`设置尾帧图片: ${uploadIDs[1]}`);
     }
+    
+    logger.info(`首帧图片: ${first_frame_image ? '已设置' : '未设置'}, 尾帧图片: ${end_frame_image ? '已设置' : '未设置'}`);
   }
 
   const componentId = util.uuid();
