@@ -29,6 +29,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify login
+        run: docker pull hello-world || true
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
