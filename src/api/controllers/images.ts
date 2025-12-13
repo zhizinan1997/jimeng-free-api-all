@@ -7,59 +7,80 @@ import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
 import logger from "@/lib/logger.ts";
 
 const DEFAULT_ASSISTANT_ID = "513695";
-export const DEFAULT_MODEL = "jimeng-4.5";
-const DEFAULT_BLEND_MODEL = "jimeng-3.0"; // 混合模式使用的模型
+export const DEFAULT_MODEL = "jimeng-image-4.5";
+const DEFAULT_BLEND_MODEL = "jimeng-image-3.0"; // 混合模式使用的模型
 const DRAFT_VERSION = "3.0.2";
 const MODEL_MAP = {
-  "jimeng-4.5": "high_aes_general_v40l",
-  "jimeng-4.1": "high_aes_general_v41",
-  "jimeng-4.0": "high_aes_general_v40",
-  "jimeng-3.1": "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
-  "jimeng-3.0": "high_aes_general_v30l:general_v3.0_18b",
+  "jimeng-image-4.5": "high_aes_general_v40l",
+  "jimeng-image-4.1": "high_aes_general_v41",
+  "jimeng-image-4.0": "high_aes_general_v40",
+  "jimeng-image-3.1": "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
+  "jimeng-image-3.0": "high_aes_general_v30l:general_v3.0_18b",
 };
 
 // 即梦支持的图片比例映射
 // image_ratio 值: 0=21:9, 1=16:9, 2=3:2, 3=4:3, 8=1:1, 4=3:4, 5=2:3, 6=9:16
-const ASPECT_RATIO_MAP: Record<string, { ratio: number; width: number; height: number }> = {
-  "21:9": { ratio: 0, width: 1512, height: 648 },
-  "16:9": { ratio: 1, width: 1360, height: 765 },
-  "3:2": { ratio: 2, width: 1360, height: 907 },
-  "4:3": { ratio: 3, width: 1360, height: 1020 },
-  "1:1": { ratio: 8, width: 1024, height: 1024 },
-  "3:4": { ratio: 4, width: 1020, height: 1360 },
-  "2:3": { ratio: 5, width: 907, height: 1360 },
-  "9:16": { ratio: 6, width: 765, height: 1360 },
+const ASPECT_RATIOS = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
+
+// 比例对应的 image_ratio 值
+const RATIO_VALUES: Record<string, number> = {
+  "21:9": 0, "16:9": 1, "3:2": 2, "4:3": 3, "1:1": 8, "3:4": 4, "2:3": 5, "9:16": 6
+};
+
+// 1K 分辨率尺寸 (3.x 模型)
+const DIMENSIONS_1K: Record<string, { width: number; height: number }> = {
+  "21:9": { width: 2016, height: 846 },
+  "16:9": { width: 1664, height: 936 },
+  "3:2": { width: 1584, height: 1056 },
+  "4:3": { width: 1472, height: 1104 },
+  "1:1": { width: 1328, height: 1328 },
+  "3:4": { width: 1104, height: 1472 },
+  "2:3": { width: 1056, height: 1584 },
+  "9:16": { width: 936, height: 1664 },
+};
+
+// 2K 分辨率尺寸 (4.x 模型)
+const DIMENSIONS_2K: Record<string, { width: number; height: number }> = {
+  "21:9": { width: 3024, height: 1296 },
+  "16:9": { width: 2560, height: 1440 },
+  "3:2": { width: 2496, height: 1664 },
+  "4:3": { width: 2304, height: 1728 },
+  "1:1": { width: 2048, height: 2048 },
+  "3:4": { width: 1728, height: 2304 },
+  "2:3": { width: 1664, height: 2496 },
+  "9:16": { width: 1440, height: 2560 },
 };
 
 /**
  * 从提示词中检测图片比例
  * 支持格式: 16:9, 16：9, 比例16:9, 横屏, 竖屏 等
+ * 返回比例字符串，如 "16:9"
  */
-function detectAspectRatio(prompt: string): { ratio: number; width: number; height: number } | null {
+function detectAspectRatioKey(prompt: string): string | null {
   // 正则匹配比例格式 (支持中英文冒号)
   const ratioRegex = /(\d+)\s*[:：]\s*(\d+)/g;
   const matches = [...prompt.matchAll(ratioRegex)];
   
   for (const match of matches) {
     const key = `${match[1]}:${match[2]}`;
-    if (ASPECT_RATIO_MAP[key]) {
+    if (ASPECT_RATIOS.includes(key)) {
       logger.info(`从提示词中检测到比例: ${key}`);
-      return ASPECT_RATIO_MAP[key];
+      return key;
     }
   }
   
   // 支持中文关键词
   if (/横屏|横版|宽屏/.test(prompt)) {
     logger.info(`从提示词中检测到横屏关键词，使用 16:9`);
-    return ASPECT_RATIO_MAP["16:9"];
+    return "16:9";
   }
   if (/竖屏|竖版|手机/.test(prompt)) {
     logger.info(`从提示词中检测到竖屏关键词，使用 9:16`);
-    return ASPECT_RATIO_MAP["9:16"];
+    return "9:16";
   }
   if (/方形|正方/.test(prompt)) {
     logger.info(`从提示词中检测到方形关键词，使用 1:1`);
-    return ASPECT_RATIO_MAP["1:1"];
+    return "1:1";
   }
   
   return null;
@@ -108,23 +129,28 @@ export async function generateImages(
     }
   }
   
-  // 从提示词中检测比例
-  const detectedRatio = detectAspectRatio(prompt);
-  let imageRatio = 8; // 默认 1:1
-  let finalWidth = width;
-  let finalHeight = height;
-  
-  if (detectedRatio) {
-    imageRatio = detectedRatio.ratio;
-    finalWidth = detectedRatio.width;
-    finalHeight = detectedRatio.height;
-    logger.info(`使用检测到的比例，image_ratio: ${imageRatio}, ${finalWidth}x${finalHeight}`);
-  }
-  
   // 有参考图时使用混合模型
   const modelName = hasFilePath ? DEFAULT_BLEND_MODEL : _model;
   const model = getModel(modelName);
-  logger.info(`使用模型: ${modelName} 映射模型: ${model} ${finalWidth}x${finalHeight} 精细度: ${sampleStrength} 模式: ${hasFilePath ? '混合' : '生成'}`);
+  
+  // 根据模型版本设置分辨率：4.x 系列默认 2k，3.x 系列默认 1k
+  const is4xModel = modelName.includes('image-4.') || modelName === 'jimeng-image-4.5' || modelName === 'jimeng-image-4.1' || modelName === 'jimeng-image-4.0';
+  const resolutionType = is4xModel ? '2k' : '1k';
+  const dimensionMap = is4xModel ? DIMENSIONS_2K : DIMENSIONS_1K;
+  
+  // 从提示词中检测比例
+  const detectedRatioKey = detectAspectRatioKey(prompt);
+  const ratioKey = detectedRatioKey || "1:1"; // 默认 1:1
+  const imageRatio = RATIO_VALUES[ratioKey];
+  const dimensions = dimensionMap[ratioKey];
+  const finalWidth = dimensions.width;
+  const finalHeight = dimensions.height;
+  
+  if (detectedRatioKey) {
+    logger.info(`使用检测到的比例 ${ratioKey}，image_ratio: ${imageRatio}, ${finalWidth}x${finalHeight}`);
+  }
+  
+  logger.info(`使用模型: ${modelName} 映射模型: ${model} ${finalWidth}x${finalHeight} 精细度: ${sampleStrength} 分辨率: ${resolutionType} 模式: ${hasFilePath ? '混合' : '生成'}`);
 
   const { totalCredit } = await getCredit(refreshToken);
   if (totalCredit <= 0)
@@ -156,7 +182,7 @@ export async function generateImages(
             id: util.uuid(),
             height: finalHeight,
             width: finalWidth,
-            resolution_type: '1k'
+            resolution_type: resolutionType
           }
         },
         ability_list: [

@@ -12,12 +12,50 @@ const DRAFT_VERSION = "3.2.8";
 const MODEL_MAP = {
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
+  "jimeng-video-3.0-fast": "dreamina_ic_generate_video_model_vgfm_3.0_fast",
   "jimeng-video-s2.0": "dreamina_ic_generate_video_model_vgfm_lite",
   "jimeng-video-2.0-pro": "dreamina_ic_generate_video_model_vgfm1.0"
 };
 
 export function getModel(model: string) {
   return MODEL_MAP[model] || MODEL_MAP[DEFAULT_MODEL];
+}
+
+// 视频支持的比例列表
+const VIDEO_ASPECT_RATIOS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
+
+/**
+ * 从提示词中检测视频比例
+ * 支持格式: 16:9, 16：9, 比例16:9, 横屏, 竖屏 等
+ */
+function detectVideoAspectRatio(prompt: string): string {
+  // 正则匹配比例格式 (支持中英文冒号)
+  const ratioRegex = /(\d+)\s*[:：]\s*(\d+)/g;
+  const matches = [...prompt.matchAll(ratioRegex)];
+  
+  for (const match of matches) {
+    const key = `${match[1]}:${match[2]}`;
+    if (VIDEO_ASPECT_RATIOS.includes(key)) {
+      logger.info(`从提示词中检测到视频比例: ${key}`);
+      return key;
+    }
+  }
+  
+  // 支持中文关键词
+  if (/横屏|横版|宽屏/.test(prompt)) {
+    logger.info(`从提示词中检测到横屏关键词，使用 16:9`);
+    return "16:9";
+  }
+  if (/竖屏|竖版|手机/.test(prompt)) {
+    logger.info(`从提示词中检测到竖屏关键词，使用 9:16`);
+    return "9:16";
+  }
+  if (/方形|正方/.test(prompt)) {
+    logger.info(`从提示词中检测到方形关键词，使用 1:1`);
+    return "1:1";
+  }
+  
+  return "1:1"; // 默认 1:1
 }
 
 /**
@@ -46,7 +84,11 @@ export async function generateVideo(
   refreshToken: string
 ) {
   const model = getModel(_model);
-  logger.info(`使用模型: ${_model} 映射模型: ${model} ${width}x${height} 分辨率: ${resolution}`);
+  
+  // 从提示词中检测视频比例
+  const videoAspectRatio = detectVideoAspectRatio(prompt);
+  
+  logger.info(`使用模型: ${_model} 映射模型: ${model} 分辨率: ${resolution} 比例: ${videoAspectRatio}`);
 
   // 检查积分
   const { totalCredit } = await getCredit(refreshToken);
@@ -198,7 +240,7 @@ export async function generateVideo(
                   "model_req_key": model,
                   "priority": 0,
                   "seed": Math.floor(Math.random() * 100000000) + 2500000000,
-                  "video_aspect_ratio": "1:1",
+                  "video_aspect_ratio": videoAspectRatio,
                   "video_gen_inputs": [{
                     duration_ms: 5000,
                     first_frame_image: first_frame_image,
