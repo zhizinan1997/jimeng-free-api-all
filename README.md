@@ -1,149 +1,95 @@
 # Jimeng AI Free 服务
 
+<div align="center">
+
 [![](https://img.shields.io/github/license/zhizinan1997/jimeng-free-api-all.svg)](LICENSE)
 ![](https://img.shields.io/github/stars/zhizinan1997/jimeng-free-api-all.svg)
 ![](https://img.shields.io/github/forks/zhizinan1997/jimeng-free-api-all.svg)
 
-> **本项目基于 [LLM-Red-Team/jimeng-free-api](https://github.com/LLM-Red-Team/jimeng-free-api) 二次开发，感谢原作者的贡献！请有项目交流需求的朋友 email 获取入群 QR，zinanzhi@gmail.com**
+> **本项目基于 [LLM-Red-Team/jimeng-free-api](https://github.com/LLM-Red-Team/jimeng-free-api) 二次开发，感谢原作者的贡献！**
+>
+> **请有项目交流需求的朋友 email 获取入群 QR，zinanzhi@gmail.com**
+
+</div>
 
 ---
 
-## 支持即梦超强图像生成能力，提供 5 款图像模型（4.5/4.1/4.0/3.1/3.0）和 5 款视频模型（3.0 Pro/3.0/3.0 Fast/S2.0/2.0 Pro），目前官方每日赠送 66 积分，可生成次数请查询 Jimeng 官网或者访问项目部署后网页管理端查看，零配置部署，多路 token 支持，网页管理&统计功能。
+## 📖 项目简介
 
-## 🎛️ 管理控制台
+**Jimeng AI Free** 是一个强大的即梦（Jimeng）AI 接口服务，旨在提供便捷的图像和视频生成能力。
 
-本项目提供了功能完善的 **Web 管理控制台**，支持统计分析、日志查看、媒体库管理等功能。
+🚀 **核心亮点**：
 
-### 界面预览
+- **超强模型支持**：集成 5 款图像模型（4.5/4.1/4.0/3.1/3.0）和 5 款视频模型（3.0 Pro/3.0/3.0 Fast/S2.0/2.0 Pro）。
+- **完全免费体验**：目前官方每日赠送 66 积分，支持多路 Token 轮询，最大化利用免费额度。
+- **可视化管理**：内置功能强大的 Web 管理控制台，支持实时监控和媒体管理。
+- **OpenAI 兼容**：完全兼容 OpenAI 接口格式，可直接接入大多数现有 AI 应用。
+- **零配置部署**：通过 Docker 一键启动，开箱即用。
 
-<table>
+---
+
+## 🎛️ 管理控制台（重点功能）
+
+本项目提供了功能完善的 **Web 管理控制台**，为您提供全方位的服务监控和管理能力。
+
+### 📊 界面预览
+
+<table align="center">
 <tr>
-<td><img src="image/dashboard-login.png" alt="登录界面" width="300"/></td>
-<td><img src="image/dashboard-stats.png" alt="统计面板" width="300"/></td>
-<td><img src="image/dashboard-media.png" alt="媒体库" width="300"/></td>
+<td align="center"><img src="image/dashboard-login.png" alt="登录界面" width="300" style="border-radius: 8px;"/></td>
+<td align="center"><img src="image/dashboard-stats.png" alt="统计面板" width="300" style="border-radius: 8px;"/></td>
+<td align="center"><img src="image/dashboard-media.png" alt="媒体库" width="300" style="border-radius: 8px;"/></td>
 </tr>
 <tr>
-<td align="center"><b>登录界面</b></td>
-<td align="center"><b>统计面板</b></td>
-<td align="center"><b>媒体库</b></td>
+<td align="center"><b>🔐 安全登录</b><br/>首次访问设置管理员密码</td>
+<td align="center"><b>📈 实时统计</b><br/>调用次数、积分追踪、Key状态</td>
+<td align="center"><b>🎬 媒体库</b><br/>生成历史、实时预览、筛选</td>
 </tr>
 </table>
 
-### 功能特点
+### ✨ 功能特点
 
-| 功能模块        | 说明                                                                     |
-| --------------- | ------------------------------------------------------------------------ |
-| 🔐 **安全登录** | 首次访问设置管理员账号密码，支持密码修改                                 |
-| 📊 **统计分析** | 实时显示 API 调用次数、消耗积分、剩余积分、Key 使用统计、模型使用统计    |
-| 📝 **实时日志** | 查看系统日志，支持按级别筛选（INFO/WARN/ERROR），自动刷新，一键清理/导出 |
-| 🖼️ **媒体库**   | 浏览所有生成的图片和视频，支持分页、类型筛选、点击预览原图/视频          |
+| 功能模块        | 说明                                                                                                      |
+| :-------------- | :-------------------------------------------------------------------------------------------------------- |
+| **📊 统计分析** | 实时大屏显示总调用量、总积分消耗。详细记录每个 API Key 的剩余积分和最后使用时间，支持按模型统计用量。     |
+| **📝 实时日志** | 实时查看系统运行日志，支持按 `INFO` / `WARN` / `ERROR` 级别筛选，支持自动刷新和一键清理/导出日志文件。    |
+| **🖼️ 媒体回溯** | 所有生成的图片和视频都会自动记录在媒体库中，支持按类型（图片/视频）筛选，点击即可预览高清原图或播放视频。 |
+| **💳 积分追踪** | **[NEW]** 每次请求自动计算并记录消耗积分，实时更新 Token 的剩余积分，精准掌握额度使用情况。               |
 
-### 访问地址
+### 🚀 访问地址
 
-启动服务后访问：`http://localhost:8000`
-
-首次访问需要设置管理员账号密码，设置完成后登录即可使用所有功能。
+部署成功后，访问：`http://localhost:8001`（默认端口）即可进入管理控制台。
 
 ---
 
-**新功能**：
+## ✨ 功能特性
 
-- ✅ 图像参考图/混合生成（通过 `filePath` 参数）
-- ✅ 视频首尾帧定制（通过 `file_paths` 参数）
-- ✅ 支持 OpenAI 多模态消息格式（Chat API 自动提取图片）
-- ✅ 即梦官网的最新视频和图像模型
-- ✅ **智能比例检测**：提示词中包含比例关键词会自动调整尺寸
-  - 图像支持：`21:9`、`16:9`、`3:2`、`4:3`、`1:1`、`3:4`、`2:3`、`9:16`
-  - 视频支持：`16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`
-  - 中文关键词：`横屏`、`竖屏`、`方形` 等
-- ✅ **智能时长检测**：提示词中包含 `5秒` 或 `10秒` 会自动调整视频时长
-- ✅ **智能分辨率**：4.x 图像模型默认 2K，3.x 模型默认 1K
-- ✅ **积分追踪**：自动记录每次请求消耗积分和剩余积分
-- ✅ **Web 管理控制台**：统计分析、实时日志、媒体库管理
+### 🎨 图像与视频生成
 
-与 OpenAI 接口完全兼容。
+- **多模型支持**：涵盖即梦官网最新发布的所有视频和图像模型。
+- **混合生成**：支持参考图生成（Image-to-Image），通过 `filePath` 参数传递。
+- **视频定制**：支持设置视频首尾帧（Image-to-Video），通过 `file_paths` 参数传递。
+- **智能分辨率**：4.x 图像模型默认 2K 高清，3.x 模型默认 1K。
+- **智能时长**：提示词包含 `5秒` 或 `10秒` 关键词时，自动调整视频生成时长。
 
-## 支持的模型
+### 📐 智能比例检测
 
-### 图像生成模型
+系统会自动识别提示词中的比例关键词，并调整生成尺寸：
 
-| 模型名称           | 说明                  | 分辨率 |
-| ------------------ | --------------------- | ------ |
-| `jimeng-image-4.5` | 即梦 4.5 版本（最新） | 2K     |
-| `jimeng-image-4.1` | 即梦 4.1 版本         | 2K     |
-| `jimeng-image-4.0` | 即梦 4.0 版本         | 2K     |
-| `jimeng-image-3.1` | 即梦 3.1 版本         | 1K     |
-| `jimeng-image-3.0` | 即梦 3.0 版本         | 1K     |
+- **图片支持**：`21:9`、`16:9`、`3:2`、`4:3`、`1:1`、`3:4`、`2:3`、`9:16`
+- **视频支持**：`16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`21:9`
+- **中文关键词**：支持 `横屏`、`竖屏`、`方形` 等自然语言指令。
 
-### 视频生成模型
+### 🤖 开发友好
 
-| 模型名称                | 说明                 | 支持时长   |
-| ----------------------- | -------------------- | ---------- |
-| `jimeng-video-3.0-pro`  | 即梦视频 3.0 Pro     | 5 秒/10 秒 |
-| `jimeng-video-3.0`      | 即梦视频 3.0         | 5 秒/10 秒 |
-| `jimeng-video-3.0-fast` | 即梦视频 3.0 快速版  | 5 秒/10 秒 |
-| `jimeng-video-s2.0`     | 即梦视频 S2.0 轻量版 | 仅 5 秒    |
-| `jimeng-video-2.0-pro`  | 即梦视频 2.0 Pro     | 仅 5 秒    |
+- **标准化接口**：`/v1/chat/completions` 接口完全兼容 OpenAI 规范。
+- **多模态消息**：支持标准的多模态消息格式，自动提取消息中的图片作为参考图或首尾帧。
 
-> **视频时长**：3.0 系列模型支持 5 秒和 10 秒（默认 10 秒），2.0 系列模型仅支持 5 秒。可通过 `duration` 参数或在提示词中指定（如 `5秒`、`10秒`）。
+---
 
-### 支持的图像比例
+## 🛠️ Docker 部署
 
-在提示词中包含比例关键词（如 `16:9`、`横屏`）可自动调整尺寸。
-
-**4.x 模型 (2K 分辨率)**：
-
-| 比例 | 尺寸      |
-| ---- | --------- |
-| 21:9 | 3024×1296 |
-| 16:9 | 2560×1440 |
-| 3:2  | 2496×1664 |
-| 4:3  | 2304×1728 |
-| 1:1  | 2048×2048 |
-| 3:4  | 1728×2304 |
-| 2:3  | 1664×2496 |
-| 9:16 | 1440×2560 |
-
-**3.x 模型 (1K 分辨率)**：
-
-| 比例 | 尺寸      |
-| ---- | --------- |
-| 21:9 | 2016×846  |
-| 16:9 | 1664×936  |
-| 3:2  | 1584×1056 |
-| 4:3  | 1472×1104 |
-| 1:1  | 1328×1328 |
-| 3:4  | 1104×1472 |
-| 2:3  | 1056×1584 |
-| 9:16 | 936×1664  |
-
-> **提示词关键字**：`横屏`/`宽屏` → 16:9，`竖屏`/`手机` → 9:16，`方形` → 1:1
-
-## 免责声明
-
-**逆向 API 是不稳定的，建议前往即梦 AI 官方 https://jimeng.jianying.com/ 体验功能，避免封禁的风险。**
-
-**本组织和个人不接受任何资金捐助和交易，此项目是纯粹研究交流学习性质！**
-
-**仅限自用，禁止对外提供服务或商用，避免对官方造成服务压力，否则风险自担！**
-
-## 接入准备
-
-从 [即梦](https://jimeng.jianying.com/) 获取 sessionid
-
-进入即梦登录账号，然后 F12 打开开发者工具，从 Application > Cookies 中找到`sessionid`的值，这将作为 Authorization 的 Bearer Token 值：`Authorization: Bearer sessionid`
-
-### 多账号接入
-
-你可以通过提供多个账号的 sessionid 并使用`,`拼接提供：
-
-`Authorization: Bearer sessionid1,sessionid2,sessionid3`
-
-每次请求服务会从中挑选一个。
-
-## Docker 部署
-
-使用预构建的 Docker 镜像一键部署：
+使用预构建镜像一键启动：
 
 ```bash
 docker run -it -d --init --name jimeng-free-api \
@@ -153,37 +99,70 @@ docker run -it -d --init --name jimeng-free-api \
   ghcr.io/zhizinan1997/jimeng-free-api-all:latest
 ```
 
-> **参数说明**：
->
-> - `-p 8001:8000`：端口映射，可根据需要修改
-> - `-v jimeng-data:/app/data`：持久化数据（统计、媒体记录、用户信息）
-> - `-e TZ=Asia/Shanghai`：设置时区为上海
+**参数说明**：
 
-## 管理控制台
+- `-p 8001:8000`：可以修改冒号前的端口（如 `-p 8080:8000`）。
+- `-v jimeng-data:/app/data`：**强烈建议挂载**，用于持久化保存统计数据、媒体记录和管理员密码。
+- `-e TZ=Asia/Shanghai`：设置时区，确保日志和统计时间准确。
 
-> 详细功能介绍和界面预览请参阅文档开头的 [🎛️ 管理控制台](#%EF%B8%8F-管理控制台重点功能) 章节。
+---
 
-部署后访问 `http://localhost:8001`（或您配置的端口）即可打开管理控制台。
+## 🧩 支持的模型列表
 
-**数据持久化**：所有数据存储在 SQLite 数据库中（`/app/data/jimeng.db`），使用 Docker Volume 挂载可确保数据持久化。
+### 🖼️ 图像生成
 
-## 接口列表
+| 模型名称           | 说明                      | 分辨率 |
+| :----------------- | :------------------------ | :----- |
+| `jimeng-image-4.5` | 即梦 4.5 版本（最新旗舰） | 2K     |
+| `jimeng-image-4.1` | 即梦 4.1 版本             | 2K     |
+| `jimeng-image-4.0` | 即梦 4.0 版本             | 2K     |
+| `jimeng-image-3.1` | 即梦 3.1 版本             | 1K     |
+| `jimeng-image-3.0` | 即梦 3.0 版本             | 1K     |
 
-所有接口都需要在 Header 中设置 Authorization：
+### 🎥 视频生成
 
+| 模型名称                | 说明           | 支持时长 |
+| :---------------------- | :------------- | :------- |
+| `jimeng-video-3.0-pro`  | 3.0 Pro 专业版 | 5s / 10s |
+| `jimeng-video-3.0`      | 3.0 标准版     | 5s / 10s |
+| `jimeng-video-3.0-fast` | 3.0 快速版     | 5s / 10s |
+| `jimeng-video-s2.0`     | S2.0 轻量版    | 5s       |
+| `jimeng-video-2.0-pro`  | 2.0 Pro 版     | 5s       |
+
+---
+
+## 🔑 接入指南
+
+### 1. 获取 Session ID
+
+1. 访问 [即梦官网](https://jimeng.jianying.com/) 并登录。
+2. 按 `F12` 打开开发者工具，进入 `Application` > `Cookies`。
+3. 找到 `sessionid` 的值。
+
+### 2. 配置 Authorization
+
+在请求 Header 中使用 Bearer Token 方式鉴权：
+
+```http
+Authorization: Bearer sessionid_value
 ```
-Authorization: Bearer [sessionid]
+
+**多账号支持**：
+如果有多个账号，可以用逗号分隔多个 sessionid，服务会自动轮询使用：
+
+```http
+Authorization: Bearer sessionid_1,sessionid_2,sessionid_3
 ```
 
-### 对话补全接口（推荐）
+---
 
-**POST /v1/chat/completions**
+## 📝 API 接口文档
 
-这是最主要的接口，与 OpenAI Chat Completions API 完全兼容。根据选择的模型自动生成图像或视频。
+### 1. 对话补全 (生成图像/视频)
 
-#### 生成图像
+**POST** `/v1/chat/completions`
 
-使用图像模型（如 `jimeng-4.5`、`jimeng` 等）：
+#### 简单示例
 
 ```json
 {
@@ -191,31 +170,13 @@ Authorization: Bearer [sessionid]
   "messages": [
     {
       "role": "user",
-      "content": "一只可爱的柴犬在草地上奔跑"
+      "content": "一只在太空中飞行的柴犬，赛博朋克风格"
     }
   ]
 }
 ```
 
-#### 生成视频
-
-使用视频模型（如 `jimeng-video-3.0` 等）：
-
-```json
-{
-  "model": "jimeng-video-3.0",
-  "messages": [
-    {
-      "role": "user",
-      "content": "一只小猫在阳光下打盹"
-    }
-  ]
-}
-```
-
-#### 带参考图生成图像（多模态）
-
-在消息中附带图片，第一张图片将作为参考图：
+#### 多模态示例 (带参考图)
 
 ```json
 {
@@ -224,38 +185,33 @@ Authorization: Bearer [sessionid]
     {
       "role": "user",
       "content": [
-        { "type": "text", "text": "将这张图片转换为水彩画风格" },
-        { "type": "image_url", "image_url": { "url": "图片URL或base64" } }
+        { "type": "text", "text": "将这张图变成梵高风格" },
+        {
+          "type": "image_url",
+          "image_url": { "url": "https://example.com/image.jpg" }
+        }
       ]
     }
   ]
 }
 ```
 
-#### 带首尾帧生成视频（多模态）
+### 2. 获取模型列表
 
-在消息中附带图片，系统会自动提取作为首尾帧：
+**GET** `/v1/models`
 
-```json
-{
-  "model": "jimeng-video-3.0",
-  "messages": [
-    {
-      "role": "user",
-      "content": [
-        { "type": "text", "text": "生成一个从日出到日落的延时摄影" },
-        { "type": "image_url", "image_url": { "url": "首帧图片" } },
-        { "type": "image_url", "image_url": { "url": "尾帧图片" } }
-      ]
-    }
-  ]
-}
-```
+返回所有可用模型及其配置信息。
 
-> **支持的图片格式**：网络 URL、本地文件路径、Base64 编码
+---
 
-### 获取模型列表
+## ⚠️ 免责声明
 
-**GET /v1/models**
+1. **服务稳定性**：本项目基于逆向 API 开发，不保证永久可用。建议优先使用 [即梦官方服务](https://jimeng.jianying.com/)。
+2. **非盈利性质**：本项目仅供个人研究交流学习，不接受任何形式的捐助，不用于商业用途。
+3. **使用规范**：请遵守相关法律法规，禁止生成违规内容。任何因使用本项目产生的后果由使用者自行承担。
 
-返回所有可用的图像和视频生成模型。
+---
+
+<div align="center">
+  <sub>Released under the MIT License.</sub>
+</div>
