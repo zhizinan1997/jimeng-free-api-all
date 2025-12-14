@@ -11,6 +11,25 @@ import util from './util.ts';
 
 const isVercelEnv = process.env.VERCEL;
 
+// 延迟导入数据库模块，避免循环依赖
+let dbModule: any = null;
+let dbLoadAttempted = false;
+
+function getDb() {
+    if (!dbLoadAttempted) {
+        dbLoadAttempted = true;
+        try {
+            // 尝试多种导入方式
+            const mod = require('./database');
+            dbModule = mod.default || mod;
+        } catch (e) {
+            // 初始化阶段可能还没准备好
+            console.error('[Logger] Failed to load database module:', e.message);
+        }
+    }
+    return dbModule;
+}
+
 class LogWriter {
 
     #buffers = [];
@@ -92,6 +111,11 @@ class LogText {
         return `[${dateFormat(this.time, "yyyy-MM-dd HH:mm:ss.SSS")}][${this.level}][${this.source.name}<${this.source.codeLine},${this.source.codeColumn}>] ${this.text}`;
     }
 
+    // 简化版字符串，用于数据库存储
+    toSimpleString() {
+        return `[${this.source.name}] ${this.text}`;
+    }
+
 }
 
 class Logger {
@@ -123,6 +147,31 @@ class Logger {
         this.#writer = new LogWriter();
     }
 
+    #saveToDb(level: string, text: string) {
+        try {
+            // 过滤掉仪表盘请求和静态文件请求
+            if (text.includes('/dashboard') || 
+                text.includes('/favicon.ico') || 
+                text.includes('/.well-known') ||
+                text.includes('request is not supported')) {
+                return;
+            }
+            
+            const db = getDb();
+            if (db && db.addLog) {
+                // 映射日志级别到数据库格式
+                const dbLevel = level === 'warning' ? 'WARN' : level.toUpperCase();
+                // 简化日志消息
+                let simpleText = text;
+                // 移除来源信息 [xxx.ts]
+                simpleText = simpleText.replace(/^\[[\w.]+\]\s*/, '');
+                db.addLog(dbLevel, simpleText);
+            }
+        } catch (e) {
+            // 忽略数据库错误，不影响主流程
+        }
+    }
+
     header() {
         this.#writer.writeSync(Buffer.from(`\n\n===================== LOG START ${dateFormat(new Date(), "yyyy-MM-dd HH:mm:ss.SSS")} =====================\n\n`));
     }
@@ -133,46 +182,59 @@ class Logger {
     }
 
     success(...params) {
-        const content = new LogText(Logger.Level.Success, ...params).toString();
+        const logText = new LogText(Logger.Level.Success, ...params);
+        const content = logText.toString();
         console.info(content[Logger.LevelColor[Logger.Level.Success]]);
         this.#writer.push(content + "\n");
+        this.#saveToDb('INFO', logText.toSimpleString());
     }
 
     info(...params) {
-        const content = new LogText(Logger.Level.Info, ...params).toString();
+        const logText = new LogText(Logger.Level.Info, ...params);
+        const content = logText.toString();
         console.info(content[Logger.LevelColor[Logger.Level.Info]]);
         this.#writer.push(content + "\n");
+        this.#saveToDb('INFO', logText.toSimpleString());
     }
 
     log(...params) {
-        const content = new LogText(Logger.Level.Log, ...params).toString();
+        const logText = new LogText(Logger.Level.Log, ...params);
+        const content = logText.toString();
         console.log(content[Logger.LevelColor[Logger.Level.Log]]);
         this.#writer.push(content + "\n");
+        this.#saveToDb('INFO', logText.toSimpleString());
     }
 
     debug(...params) {
         if(!config.system.debug) return;  //非调试模式忽略debug
-        const content = new LogText(Logger.Level.Debug, ...params).toString();
+        const logText = new LogText(Logger.Level.Debug, ...params);
+        const content = logText.toString();
         console.debug(content[Logger.LevelColor[Logger.Level.Debug]]);
         this.#writer.push(content + "\n");
     }
 
     warn(...params) {
-        const content = new LogText(Logger.Level.Warning, ...params).toString();
+        const logText = new LogText(Logger.Level.Warning, ...params);
+        const content = logText.toString();
         console.warn(content[Logger.LevelColor[Logger.Level.Warning]]);
         this.#writer.push(content + "\n");
+        this.#saveToDb('WARN', logText.toSimpleString());
     }
 
     error(...params) {
-        const content = new LogText(Logger.Level.Error, ...params).toString();
+        const logText = new LogText(Logger.Level.Error, ...params);
+        const content = logText.toString();
         console.error(content[Logger.LevelColor[Logger.Level.Error]]);
         this.#writer.push(content);
+        this.#saveToDb('ERROR', logText.toSimpleString());
     }
 
     fatal(...params) {
-        const content = new LogText(Logger.Level.Fatal, ...params).toString();
+        const logText = new LogText(Logger.Level.Fatal, ...params);
+        const content = logText.toString();
         console.error(content[Logger.LevelColor[Logger.Level.Fatal]]);
         this.#writer.push(content);
+        this.#saveToDb('ERROR', logText.toSimpleString());
     }
 
     destory() {

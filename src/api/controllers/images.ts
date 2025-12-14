@@ -6,10 +6,11 @@ import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
 import logger from "@/lib/logger.ts";
 
-const DEFAULT_ASSISTANT_ID = "513695";
+const DEFAULT_ASSISTANT_ID = 513695;
 export const DEFAULT_MODEL = "jimeng-image-4.5";
 const DEFAULT_BLEND_MODEL = "jimeng-image-3.0"; // 混合模式使用的模型
-const DRAFT_VERSION = "3.0.2";
+const DRAFT_VERSION = "3.2.2";
+
 const MODEL_MAP = {
   "jimeng-image-4.5": "high_aes_general_v40l",
   "jimeng-image-4.1": "high_aes_general_v41",
@@ -94,14 +95,14 @@ export async function generateImages(
   _model: string,
   prompt: string,
   {
-    width = 1024,
-    height = 1024,
+    ratio = "1:1",
+    resolution = "2k",
     sampleStrength = 0.5,
     negativePrompt = "",
     filePath = "",
   }: {
-    width?: number;
-    height?: number;
+    ratio?: string;
+    resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
     filePath?: string;  // 参考图路径，支持本地/网络
@@ -133,24 +134,46 @@ export async function generateImages(
   const modelName = hasFilePath ? DEFAULT_BLEND_MODEL : _model;
   const model = getModel(modelName);
   
-  // 根据模型版本设置分辨率：4.x 系列默认 2k，3.x 系列默认 1k
+  // 解析分辨率和比例
   const is4xModel = modelName.includes('image-4.') || modelName === 'jimeng-image-4.5' || modelName === 'jimeng-image-4.1' || modelName === 'jimeng-image-4.0';
-  const resolutionType = is4xModel ? '2k' : '1k';
-  const dimensionMap = is4xModel ? DIMENSIONS_2K : DIMENSIONS_1K;
+  let resolutionType = resolution; // 用户指定优先
+  
+  // 如果未指定或不明确，根据模型默认
+  if (!['1k', '2k'].includes(resolutionType)) {
+    resolutionType = is4xModel ? '2k' : '1k';
+  }
+
+  const dimensionMap = resolutionType === '2k' ? DIMENSIONS_2K : DIMENSIONS_1K;
   
   // 从提示词中检测比例
   const detectedRatioKey = detectAspectRatioKey(prompt);
-  const ratioKey = detectedRatioKey || "1:1"; // 默认 1:1
-  const imageRatio = RATIO_VALUES[ratioKey];
-  const dimensions = dimensionMap[ratioKey];
+  // 如果用户传了 valid ratio (in map) 则使用，否则使用 detector 或默认 1:1
+  // 这里逻辑：如果 ratio 是默认 "1:1" 且 detectedRatioKey 存在，则使用 detected。否则优先使用 ratio 参数。
+  // 注意：如果用户显式传了 "1:1" 我们可能无法区分是默认还是显式。
+  // 但通常 API 调用者会传 ratio。如果 prompt 里有，我们假设 prompt 优先级较高？不，参数优先级通常更高。
+  // 但是 detectAspectRatioKey 用意是方便用户只通过 prompt 控制。
+  // 假设：如果 ratio 是 "custom" (API gateways sometimes send "custom"), treat as unset.
+  // 这里简化：如果 ratio 参数在 RATIO_VALUES 中且不是 detect 出来的（这里无法区分），直接用。
+  // 妥协：优先使用 ratio 参数，除非 ratio 是 "custom" 或者空。
+  
+  let validRatio = ratio;
+  if (!RATIO_VALUES.hasOwnProperty(validRatio)) {
+      validRatio = "1:1";
+  }
+  
+  // 如果 prompt 里检测到且 ratio 是默认 "1:1" (可能是未传)，则覆盖。
+  // 这里的风险是用户真的想 1:1 但 prompt 里有 "16:9"。
+  // 鉴于这是一个 "Chat" driven API often，prompt detection is feature.
+  if (detectedRatioKey && validRatio === "1:1") {
+      validRatio = detectedRatioKey;
+  }
+  
+  const imageRatio = RATIO_VALUES[validRatio];
+  const dimensions = dimensionMap[validRatio];
   const finalWidth = dimensions.width;
   const finalHeight = dimensions.height;
   
-  if (detectedRatioKey) {
-    logger.info(`使用检测到的比例 ${ratioKey}，image_ratio: ${imageRatio}, ${finalWidth}x${finalHeight}`);
-  }
-  
-  logger.info(`使用模型: ${modelName} 映射模型: ${model} ${finalWidth}x${finalHeight} 精细度: ${sampleStrength} 分辨率: ${resolutionType} 模式: ${hasFilePath ? '混合' : '生成'}`);
+  logger.info(`使用模型: ${modelName} 映射模型: ${model} ${finalWidth}x${finalHeight} (${validRatio}) 精细度: ${sampleStrength} 分辨率: ${resolutionType} 模式: ${hasFilePath ? '混合' : '生成'}`);
 
   const { totalCredit } = await getCredit(refreshToken);
   if (totalCredit <= 0)
@@ -248,6 +271,7 @@ export async function generateImages(
             id: util.uuid(),
             height: finalHeight,
             width: finalWidth,
+            resolution_type: resolutionType
           },
         },
         history_option: {
@@ -258,26 +282,15 @@ export async function generateImages(
     };
   }
   
-  // 构建请求参数
-  const babiParam = hasFilePath ? {
-    scenario: "image_video_generation",
-    feature_key: "to_image_referenceimage_generate",
-    feature_entrance: "to_image",
-    feature_entrance_detail: "to_image-referenceimage-byte_edit",
-  } : {
-    scenario: "image_video_generation",
-    feature_key: "aigc_to_image",
-    feature_entrance: "to_image",
-    feature_entrance_detail: "to_image-" + model,
-  };
-  
   const { aigc_data } = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
     {
       params: {
-        babi_param: encodeURIComponent(JSON.stringify(babiParam)),
+        da_version: "3.2.2",
+        web_component_open_flag: 1,
+        web_version: "3.2.2"
       },
       data: {
         extend: {
@@ -341,9 +354,8 @@ export async function generateImages(
   
   let status = 20, failCode, item_list = [];
   let retryCount = 0;
-  const MAX_POLL_RETRIES = 120; // 最多轮询120次（约2分钟，jimeng-4.5需要更长时间）
+  const MAX_POLL_RETRIES = 120; // 最多轮询120次
   
-  // 轮询条件：状态在处理中 且 没有图片 且 未超时
   while (PROCESSING_STATES.includes(status) && (!item_list || item_list.length === 0) && retryCount < MAX_POLL_RETRIES) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
     retryCount++;
@@ -471,6 +483,62 @@ export async function generateImages(
   });
 }
 
+/**
+ * 带自动降级重试的图像生成
+ * 如果积分不足，自动降低分辨率重试
+ */
+export async function generateImagesWithRetry(
+  _model: string,
+  prompt: string,
+  options: {
+    ratio?: string;
+    resolution?: string;
+    sampleStrength?: number;
+    negativePrompt?: string;
+    filePath?: string;
+  },
+  refreshToken: string
+): Promise<string[]> {
+  const resolutionLevels = ['2k', '1k']; // 分辨率降级顺序
+  let currentResIndex = Math.max(0, resolutionLevels.indexOf(options.resolution || '2k'));
+  
+  while (currentResIndex < resolutionLevels.length) {
+    try {
+      const currentOptions = {
+        ...options,
+        resolution: resolutionLevels[currentResIndex]
+      };
+      logger.info(`尝试生成图像，分辨率: ${currentOptions.resolution}`);
+      return await generateImages(_model, prompt, currentOptions, refreshToken);
+    } catch (error) {
+      // 检查是否为积分不足错误 (fail_code 2039 或包含积分不足关键词)
+      const isInsufficientCredits = 
+        error.code === EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS[0] ||
+        (error.message && (error.message.includes('积分不足') || error.message.includes('2039')));
+      
+      if (isInsufficientCredits && currentResIndex < resolutionLevels.length - 1) {
+        currentResIndex++;
+        logger.warn(`积分不足，自动降级到 ${resolutionLevels[currentResIndex]} 分辨率重试...`);
+        continue;
+      }
+      
+      // 已是最低分辨率仍然失败
+      if (isInsufficientCredits) {
+        throw new APIException(
+          EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS,
+          '积分不足，已自动降至最低画质仍然不足，请前往即梦官网 https://jimeng.jianying.com 充值积分'
+        );
+      }
+      
+      // 其他错误直接抛出
+      throw error;
+    }
+  }
+  
+  throw new APIException(EX.API_IMAGE_GENERATION_FAILED, '图像生成失败');
+}
+
 export default {
   generateImages,
+  generateImagesWithRetry,
 };

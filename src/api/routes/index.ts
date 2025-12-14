@@ -7,12 +7,13 @@ import ping from "./ping.ts";
 import token from './token.js';
 import models from './models.ts';
 import videos from './videos.ts';
+import dashboard from './dashboard.ts';
 
 export default [
     {
         get: {
             '/': async () => {
-                const content = await fs.readFile('public/welcome.html');
+                const content = await fs.readFile('public/index.html');
                 return new Response(content, {
                     type: 'html',
                     headers: {
@@ -27,5 +28,6 @@ export default [
     ping,
     token,
     models,
-    videos
+    videos,
+    dashboard
 ];

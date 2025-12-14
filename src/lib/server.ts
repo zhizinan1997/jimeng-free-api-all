@@ -36,7 +36,7 @@ class Server {
             }
         });
         // 载荷解析器支持
-        this.app.use(koaBody(_.clone(config.system.requestBody)));
+        this.app.use(koaBody(_.merge(_.clone(config.system.requestBody), { multipart: true })));
         this.app.on("error", (err: any) => {
             // 忽略连接重试、中断、管道、取消错误
             if (["ECONNRESET", "ECONNABORTED", "EPIPE", "ECANCELED"].includes(err.code)) return;
@@ -62,7 +62,9 @@ class Server {
                 for (let uri in route[method]) {
                     this.router[method](`${prefix}${uri}`, async ctx => {
                         const { request, response } = await this.#requestProcessing(ctx, route[method][uri]);
-                        if(response != null && config.system.requestLog)
+                        // 跳过仪表盘相关请求的日志记录
+                        const isDashboardRequest = request.url.includes('/dashboard');
+                        if(response != null && config.system.requestLog && !isDashboardRequest)
                             logger.info(`<- ${request.method} ${request.url} ${response.time - request.time}ms`);
                     });
                 }
@@ -95,7 +97,9 @@ class Server {
         return new Promise(resolve => {
             const request = new Request(ctx);
             try {
-                if(config.system.requestLog)
+                // 跳过仪表盘相关请求的日志记录
+                const isDashboardRequest = request.url.includes('/dashboard');
+                if(config.system.requestLog && !isDashboardRequest)
                     logger.info(`-> ${request.method} ${request.url}`);
                     routeFn(request)
                 .then(response => {

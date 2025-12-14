@@ -5,8 +5,10 @@ import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
+import db from "@/lib/database.ts";
 import { generateImages, DEFAULT_MODEL } from "./images.ts";
 import { generateVideo, DEFAULT_MODEL as DEFAULT_VIDEO_MODEL } from "./videos.ts";
+import { getCredit } from "./core.ts";
 
 // 最大重试次数
 const MAX_RETRY_COUNT = 3;
@@ -131,6 +133,14 @@ export async function createCompletion(
       try {
         // 视频生成
         logger.info(`开始生成视频，模型: ${_model}，图片数量: ${imageUrls.length}`);
+        
+        // 查询生成前的积分
+        let creditsBefore = 0;
+        try {
+          const beforeCredit = await getCredit(refreshToken);
+          creditsBefore = beforeCredit.totalCredit;
+        } catch (e) { /* 忽略积分查询错误 */ }
+        
         const videoUrl = await generateVideo(
           _model,
           promptText || lastMessage.content,
@@ -144,6 +154,23 @@ export async function createCompletion(
         );
         
         logger.info(`视频生成成功，URL: ${videoUrl}`);
+        
+        // 查询生成后的积分并计算消耗
+        let creditsUsed = 0;
+        let remainingCredits = 0;
+        try {
+          const afterCredit = await getCredit(refreshToken);
+          remainingCredits = afterCredit.totalCredit;
+          creditsUsed = Math.max(0, creditsBefore - remainingCredits);
+          logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
+        } catch (e) { /* 忽略积分查询错误 */ }
+        
+        // 记录统计和媒体
+        try {
+          db.recordCall(refreshToken, _model, creditsUsed, remainingCredits);
+          if (videoUrl) db.saveMedia('video', videoUrl, _model, promptText || lastMessage.content, refreshToken);
+        } catch (e) { /* 忽略数据库错误 */ }
+        
         return {
           id: util.uuid(),
           model: _model,
@@ -189,6 +216,13 @@ export async function createCompletion(
       }
     } else {
       // 图像生成
+      // 查询生成前的积分
+      let creditsBefore = 0;
+      try {
+        const beforeCredit = await getCredit(refreshToken);
+        creditsBefore = beforeCredit.totalCredit;
+      } catch (e) { /* 忽略积分查询错误 */ }
+      
       const generatedImageUrls = await generateImages(
         model,
         promptText || lastMessage.content,
@@ -199,6 +233,24 @@ export async function createCompletion(
         },
         refreshToken
       );
+
+      // 查询生成后的积分并计算消耗
+      let creditsUsed = 0;
+      let remainingCredits = 0;
+      try {
+        const afterCredit = await getCredit(refreshToken);
+        remainingCredits = afterCredit.totalCredit;
+        creditsUsed = Math.max(0, creditsBefore - remainingCredits);
+        logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
+      } catch (e) { /* 忽略积分查询错误 */ }
+
+      // 记录统计和媒体
+      try {
+        db.recordCall(refreshToken, _model || model, creditsUsed, remainingCredits);
+        generatedImageUrls.forEach(url => {
+          if (url) db.saveMedia('image', url, _model || model, promptText || lastMessage.content, refreshToken);
+        });
+      } catch (e) { /* 忽略数据库错误 */ }
 
       return {
         id: util.uuid(),
@@ -372,6 +424,12 @@ export async function createCompletionStream(
           
           logger.info(`视频生成成功，URL: ${videoUrl}`);
           
+          // 记录统计和媒体
+          try {
+            db.recordCall(refreshToken, _model, 0);
+            if (videoUrl) db.saveMedia('video', videoUrl, _model, promptText || lastMessage.content, refreshToken);
+          } catch (e) { /* 忽略数据库错误 */ }
+          
           stream.write(
             "data: " +
               JSON.stringify({
@@ -488,6 +546,14 @@ export async function createCompletionStream(
         refreshToken
       )
         .then((generatedUrls) => {
+          // 记录统计和媒体
+          try {
+            db.recordCall(refreshToken, _model || model, 0);
+            generatedUrls.forEach(url => {
+              if (url) db.saveMedia('image', url, _model || model, promptText || lastMessage.content, refreshToken);
+            });
+          } catch (e) { /* 忽略数据库错误 */ }
+          
           for (let i = 0; i < generatedUrls.length; i++) {
             const url = generatedUrls[i];
             stream.write(
