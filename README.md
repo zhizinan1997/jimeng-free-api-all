@@ -4,9 +4,9 @@
 ![](https://img.shields.io/github/stars/zhizinan1997/jimeng-free-api-all.svg)
 ![](https://img.shields.io/github/forks/zhizinan1997/jimeng-free-api-all.svg)
 
-> **本项目基于 [LLM-Red-Team/jimeng-free-api](https://github.com/LLM-Red-Team/jimeng-free-api) 二次开发，感谢原作者的贡献！**
+> **本项目基于 [LLM-Red-Team/jimeng-free-api](https://github.com/LLM-Red-Team/jimeng-free-api) 二次开发，感谢原作者的贡献！请有项目交流需求的朋友 email 获取入群 QR，zinanzhi@gmail.com**
 
-> **请有项目交流需求的朋友 email 获取入群 QR，zinanzhi@gmail.com**
+---
 
 > 支持即梦超强图像生成能力，提供 5 款图像模型（4.5/4.1/4.0/3.1/3.0）和 5 款视频模型（3.0 Pro/3.0/3.0 Fast/S2.0/2.0 Pro），目前官方每日赠送 66 积分，可生成次数请查询 Jimeng 官网模型消耗积分数量，零配置部署，多路 token 支持，网页管理&统计功能。
 
