@@ -1,5 +1,8 @@
 FROM node:lts-alpine AS BUILD_IMAGE
 
+# 安装编译 better-sqlite3 所需的工具
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 COPY package*.json yarn.lock ./
