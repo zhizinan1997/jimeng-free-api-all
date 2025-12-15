@@ -20,6 +20,16 @@ export default [
                         Expires: '-1'
                     }
                 });
+            },
+            '/favicon.ico': async () => {
+                // 返回空的 favicon，避免浏览器请求报错
+                return new Response(null, {
+                    statusCode: 204,
+                    headers: {
+                        'Content-Type': 'image/x-icon',
+                        'Cache-Control': 'public, max-age=86400'
+                    }
+                });
             }
         }
     },
