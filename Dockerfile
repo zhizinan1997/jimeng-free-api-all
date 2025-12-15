@@ -1,25 +1,18 @@
-FROM node:lts AS BUILD_IMAGE
+FROM node:lts-alpine AS BUILD_IMAGE
 
 WORKDIR /app
 
 COPY package*.json yarn.lock ./
 
-# 只安装生产依赖和开发依赖用于构建
+# 安装依赖用于构建
 RUN yarn install --registry https://registry.npmmirror.com/ --ignore-engines
 
 COPY . .
 
 RUN yarn run build
 
-# 使用 debian-based 镜像，避免 alpine 的兼容性问题
-FROM node:lts-slim
-
-# 安装 better-sqlite3 编译所需的依赖
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+# 最终镜像使用 alpine
+FROM node:lts-alpine
 
 WORKDIR /app
 
@@ -30,8 +23,12 @@ COPY --from=BUILD_IMAGE /app/yarn.lock /app/yarn.lock
 COPY --from=BUILD_IMAGE /app/dist /app/dist
 COPY --from=BUILD_IMAGE /app/public /app/public
 
-# 在目标架构上重新安装依赖（确保 native 模块正确编译）
-RUN yarn install --production --registry https://registry.npmmirror.com/ --ignore-engines
+# 安装编译工具、编译 better-sqlite3、然后删除编译工具（一个 RUN 命令减少层数）
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && yarn install --production --registry https://registry.npmmirror.com/ --ignore-engines \
+    && apk del .build-deps \
+    && rm -rf /var/cache/apk/* \
+    && rm -rf /root/.npm /root/.node-gyp /tmp/*
 
 # 创建数据目录
 RUN mkdir -p /app/data
