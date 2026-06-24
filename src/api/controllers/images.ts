@@ -5,13 +5,18 @@ import EX from "@/api/consts/exceptions.ts";
 import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
 import logger from "@/lib/logger.ts";
+import { JimengModelConfig, resolveImageModelConfig } from "./models.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
-export const DEFAULT_MODEL = "jimeng-image-4.5";
-const DRAFT_VERSION = "3.3.8";
+export const DEFAULT_MODEL = "jimeng-image-5.0-lite";
+const DRAFT_VERSION = "3.3.20";
+const WEB_VERSION = "7.5.0";
 const MIN_VERSION = "3.0.2";
 
 const MODEL_MAP = {
+  "jimeng-image-5.0-lite": "high_aes_general_v50",
+  "jimeng-image-4.7": "high_aes_general_v43",
+  "jimeng-image-4.6": "high_aes_general_v42",
   "jimeng-image-4.5": "high_aes_general_v40l",
   "jimeng-image-4.1": "high_aes_general_v41",
   "jimeng-image-4.0": "high_aes_general_v40",
@@ -19,6 +24,45 @@ const MODEL_MAP = {
   "jimeng-image-3.0": "high_aes_general_v30l:general_v3.0_18b",
   "jimeng-image-2.0-pro": "high_aes_general_v20_L:general_v2.0_L",
 };
+
+function isHighResImageModel(modelName: string, modelConfig?: JimengModelConfig) {
+  if (modelConfig) return modelConfig.supportedResolutions.includes("2k");
+  return [
+    "jimeng-image-5.0-lite",
+    "jimeng-image-4.7",
+    "jimeng-image-4.6",
+    "jimeng-image-4.5",
+    "jimeng-image-4.1",
+    "jimeng-image-4.0",
+  ].includes(modelName);
+}
+
+function getImageResolutionLevels(modelName: string) {
+  if (modelName === "jimeng-image-2.0-pro") return ["1k"];
+  if (isHighResImageModel(modelName)) return ["4k", "2k"];
+  return ["1k"];
+}
+
+function getImageResolutionFallbacks(
+  modelName: string,
+  requestedResolution?: string,
+  modelConfig?: JimengModelConfig
+) {
+  const defaultResolution =
+    modelConfig?.defaultResolution || (isHighResImageModel(modelName) ? "2k" : "1k");
+  const supportedResolutions =
+    modelConfig?.supportedResolutions?.length
+      ? modelConfig.supportedResolutions
+      : getImageResolutionLevels(modelName);
+  const startResolution = supportedResolutions.includes(requestedResolution || "")
+    ? requestedResolution
+    : defaultResolution;
+  const startIndex = Math.max(
+    0,
+    supportedResolutions.indexOf(startResolution || defaultResolution)
+  );
+  return supportedResolutions.slice(startIndex);
+}
 
 // 即梦支持的图片比例映射
 // image_ratio 值: 0=21:9, 1=16:9, 2=3:2, 3=4:3, 8=1:1, 4=3:4, 5=2:3, 6=9:16
@@ -67,6 +111,17 @@ const DIMENSIONS_2K: Record<string, { width: number; height: number }> = {
   "3:4": { width: 1728, height: 2304 },
   "2:3": { width: 1664, height: 2496 },
   "9:16": { width: 1440, height: 2560 },
+};
+
+const DIMENSIONS_4K: Record<string, { width: number; height: number }> = {
+  "21:9": { width: 6197, height: 2656 },
+  "16:9": { width: 5404, height: 3040 },
+  "3:2": { width: 4992, height: 3328 },
+  "4:3": { width: 4693, height: 3520 },
+  "1:1": { width: 4096, height: 4096 },
+  "3:4": { width: 3520, height: 4693 },
+  "2:3": { width: 3328, height: 4992 },
+  "9:16": { width: 3040, height: 5404 },
 };
 
 /**
@@ -152,30 +207,27 @@ export async function generateImages(
 
   // 使用用户选择的模型（混合模式不再强制3.0）
   const modelName = _model;
-  const model = getModel(modelName);
+  const modelConfig = await resolveImageModelConfig(modelName, refreshToken);
+  const model = modelConfig.modelReqKey || getModel(modelName);
 
   // 解析分辨率和比例
-  const is4xModel =
-    modelName.includes("image-4.") ||
-    modelName === "jimeng-image-4.5" ||
-    modelName === "jimeng-image-4.1" ||
-    modelName === "jimeng-image-4.0";
-  const is2xModel = modelName === "jimeng-image-2.0-pro";
+  const isHighResModel = isHighResImageModel(modelName, modelConfig);
   
   let resolutionType = resolution; // 用户指定优先
 
-  // 2.0pro 只支持 1k，强制覆盖
-  if (is2xModel) {
-    resolutionType = "1k";
-    if (resolution !== "1k") {
-      logger.warn(`⚠️ [分辨率] 2.0pro 只支持 1k，已自动调整`);
+  if (!modelConfig.supportedResolutions.includes(resolutionType)) {
+    resolutionType = modelConfig.defaultResolution;
+    if (resolution !== resolutionType) {
+      logger.warn(`⚠️ [分辨率] ${modelName} 不支持 ${resolution}，已自动调整为 ${resolutionType}`);
     }
-  } else if (!["1k", "2k"].includes(resolutionType)) {
-    // 如果未指定或不明确，根据模型默认
-    resolutionType = is4xModel ? "2k" : "1k";
   }
 
-  const dimensionMap = resolutionType === "2k" ? DIMENSIONS_2K : DIMENSIONS_1K;
+  const dimensionMap =
+    resolutionType === "4k"
+      ? DIMENSIONS_4K
+      : resolutionType === "2k"
+      ? DIMENSIONS_2K
+      : DIMENSIONS_1K;
 
   // 从提示词中检测比例
   const detectedRatioKey = detectAspectRatioKey(prompt);
@@ -340,7 +392,13 @@ export async function generateImages(
               modelReqKey: model,
               resolutionType: resolutionType,
               abilityList: [],
-              benefitCount: is4xModel && resolutionType === "2k" ? 4 : 1,
+              benefitCount:
+                modelConfig.benefitCountByResolution?.[resolutionType] ??
+                (modelName === "jimeng-image-5.0-lite" && resolutionType === "2k"
+                  ? 3
+                  : isHighResModel && resolutionType === "2k"
+                    ? 4
+                    : 1),
               reportParams: {
                 enterSource: "generate",
                 vipSource: "generate",
@@ -397,7 +455,7 @@ export async function generateImages(
       params: {
         da_version: DRAFT_VERSION,
         web_component_open_flag: 1,
-        web_version: DRAFT_VERSION,
+        web_version: WEB_VERSION,
       },
       data: requestData,
     }
@@ -575,10 +633,15 @@ export async function generateImagesWithRetry(
   },
   refreshToken: string
 ): Promise<string[]> {
-  const resolutionLevels = ["2k", "1k"]; // 分辨率降级顺序
+  const modelConfig = await resolveImageModelConfig(_model, refreshToken);
+  const resolutionLevels = getImageResolutionFallbacks(
+    _model,
+    options.resolution,
+    modelConfig
+  );
   let currentResIndex = Math.max(
     0,
-    resolutionLevels.indexOf(options.resolution || "2k")
+    resolutionLevels.indexOf(resolutionLevels[0])
   );
 
   while (currentResIndex < resolutionLevels.length) {

@@ -4,6 +4,8 @@ import Request from '@/lib/request/Request.ts';
 import Response from '@/lib/response/Response.ts';
 import { tokenSplit } from '@/api/controllers/core.ts';
 import { createCompletion, createCompletionStream } from '@/api/controllers/chat.ts';
+import APIException from '@/lib/exceptions/APIException.ts';
+import EX from '@/api/consts/exceptions.ts';
 
 export default {
 
@@ -18,6 +20,9 @@ export default {
                 .validate('headers.authorization', _.isString)
             // refresh_token切分
             const tokens = tokenSplit(request.headers.authorization);
+            if (tokens.length === 0) {
+                throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Authorization token is empty");
+            }
             // 随机挑选一个refresh_token
             const token = _.sample(tokens);
             const { model, messages, stream } = request.body;

@@ -1,74 +1,24 @@
-import _ from 'lodash';
+import Request from '@/lib/request/Request.ts';
+import { tokenSplit } from '@/api/controllers/core.ts';
+import { listModelConfigs, toOpenAIModel } from '@/api/controllers/models.ts';
 
 export default {
 
     prefix: '/v1',
 
     get: {
-        '/models': async () => {
+        '/models': async (request: Request) => {
+            const tokens = typeof request.headers.authorization === 'string'
+                ? tokenSplit(request.headers.authorization)
+                : [];
+            const refresh = request.query.refresh === 'true' || request.query.refresh === '1';
+            const type = request.query.type === 'image' || request.query.type === 'video'
+                ? request.query.type
+                : undefined;
+            const models = await listModelConfigs(tokens[0], { refresh, type });
+
             return {
-                "data": [
-                    {
-                        "id": "jimeng-image-4.5",
-                        "object": "model",
-                        "owned_by": "jimeng-image",
-                        "description": "即梦AI图片生成模型 4.5 版本（最新）"
-                    },
-                    {
-                        "id": "jimeng-image-4.1",
-                        "object": "model",
-                        "owned_by": "jimeng-image",
-                        "description": "即梦AI图片生成模型 4.1 版本"
-                    },
-                    {
-                        "id": "jimeng-image-4.0",
-                        "object": "model",
-                        "owned_by": "jimeng-image",
-                        "description": "即梦AI图片生成模型 4.0 版本"
-                    },
-                    {
-                        "id": "jimeng-image-3.1",
-                        "object": "model",
-                        "owned_by": "jimeng-image",
-                        "description": "即梦AI图片生成模型 3.1 版本"
-                    },
-                    {
-                        "id": "jimeng-image-3.0",
-                        "object": "model",
-                        "owned_by": "jimeng-image",
-                        "description": "即梦AI图片生成模型 3.0 版本"
-                    },
-                    {
-                        "id": "jimeng-video-3.0",
-                        "object": "model",
-                        "owned_by": "jimeng-video",
-                        "description": "即梦AI视频生成模型 3.0 版本"
-                    },
-                    {
-                        "id": "jimeng-video-3.0-pro",
-                        "object": "model",
-                        "owned_by": "jimeng-video",
-                        "description": "即梦AI视频生成模型 3.0 专业版"
-                    },
-                    {
-                        "id": "jimeng-video-3.0-fast",
-                        "object": "model",
-                        "owned_by": "jimeng-video",
-                        "description": "即梦AI视频生成模型 3.0 快速版"
-                    },
-                    {
-                        "id": "jimeng-video-s2.0",
-                        "object": "model",
-                        "owned_by": "jimeng-video",
-                        "description": "即梦AI视频生成模型 S2.0 (轻量版)"
-                    },
-                    {
-                        "id": "jimeng-video-2.0-pro",
-                        "object": "model",
-                        "owned_by": "jimeng-video",
-                        "description": "即梦AI视频生成模型 2.0 专业版"
-                    }
-                ]
+                data: models.map(toOpenAIModel)
             };
         }
 

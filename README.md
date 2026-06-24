@@ -16,6 +16,16 @@
 
 ## 更新日志
 
+### 2026-06-24
+
+- **适配即梦官网新图片模型**：新增 `jimeng-image-5.0-lite`（`high_aes_general_v50`），并补充 `jimeng-image-4.7`、`jimeng-image-4.6`；图片默认模型更新为 5.0 Lite，4.x/5.x 支持 2K 默认与 4K 请求。
+- **补充 Seedance 视频模型接口**：新增 `jimeng-video-seedance-2.0-mini`、`jimeng-video-seedance-2.0-fast`、`jimeng-video-seedance-2.0-pro`、`jimeng-video-seedance-1.5-pro`，并适配对应 `model_req_key`、分辨率和权益 `benefit_type`。
+- **新增官网动态模型列表**：`GET /v1/models` 在带 `Authorization` 时会实时拉取即梦官网图片/视频模型配置并缓存；支持 `?refresh=true` 强制刷新，支持 `?type=image` / `?type=video` 过滤；无 token 或官网失败时自动返回内置兜底模型。
+- **生成接口接入动态模型映射**：图片和视频生成会优先使用官网动态配置中的 `model_req_key`、分辨率和权益信息，静态映射继续作为兜底，减少官网新增模型后必须改代码的概率。
+- **更新请求版本参数**：图片与视频生成请求统一更新为 `web_version=7.5.0`、`da_version=3.3.20`，同步当前官网请求格式。
+- **增强鲁棒性**：优化 `Authorization` 多 token 解析，自动 trim 并过滤空 token；聊天、图片、视频、积分查询路由会拒绝空 token；视频轮询兼容 `20/42/45` 处理中状态，避免死循环，并在生成结束但没有 URL 时明确抛错。
+- **优化自动降级策略**：图片/视频根据模型实际支持的分辨率做降级，避免对不支持的档位重复请求或意外从最高档开始消耗积分。
+
 ### 2026-01-11
 
 - 🐛 **修复混合模式模型选择问题**：之前上传参考图时会强制使用 3.0 模型，现在支持所有模型的混合生成模式
@@ -172,9 +182,12 @@ npm start
 
 | 模型名称               | 说明                      | 分辨率    |
 | :--------------------- | :------------------------ | :-------- |
-| `jimeng-image-4.5`     | 即梦 4.5 版本（最新旗舰） | 2K (默认) |
-| `jimeng-image-4.1`     | 即梦 4.1 版本             | 2K (默认) |
-| `jimeng-image-4.0`     | 即梦 4.0 版本             | 2K (默认) |
+| `jimeng-image-5.0-lite` | 即梦 5.0 Lite 版本（最新） | 2K (默认) / 4K |
+| `jimeng-image-4.7`     | 即梦 4.7 版本             | 2K (默认) / 4K |
+| `jimeng-image-4.6`     | 即梦 4.6 版本             | 2K (默认) / 4K |
+| `jimeng-image-4.5`     | 即梦 4.5 版本             | 2K (默认) / 4K |
+| `jimeng-image-4.1`     | 即梦 4.1 版本             | 2K (默认) / 4K |
+| `jimeng-image-4.0`     | 即梦 4.0 版本             | 2K (默认) / 4K |
 | `jimeng-image-3.1`     | 即梦 3.1 版本             | 1K (默认) |
 | `jimeng-image-3.0`     | 即梦 3.0 版本             | 1K (默认) |
 | `jimeng-image-2.0-pro` | 即梦 2.0 Pro 版本         | 仅支持 1K |
@@ -183,6 +196,10 @@ npm start
 
 | 模型名称                | 说明           | 支持时长 |
 | :---------------------- | :------------- | :------- |
+| `jimeng-video-seedance-2.0-mini` | Seedance 2.0 Mini | 5s / 10s |
+| `jimeng-video-seedance-2.0-fast` | Seedance 2.0 Fast VIP | 5s / 10s |
+| `jimeng-video-seedance-2.0-pro`  | Seedance 2.0 VIP | 5s / 10s |
+| `jimeng-video-seedance-1.5-pro`  | Seedance 1.5 Pro | 5s / 10s |
 | `jimeng-video-3.0-pro`  | 3.0 Pro 专业版 | 5s / 10s |
 | `jimeng-video-3.0`      | 3.0 标准版     | 5s / 10s |
 | `jimeng-video-3.0-fast` | 3.0 快速版     | 5s / 10s |
@@ -261,6 +278,8 @@ Authorization: Bearer sessionid_1,sessionid_2,sessionid_3
 **GET** `/v1/models`
 
 返回所有可用模型及其配置信息。
+
+默认返回内置兜底模型列表；如果请求带有即梦 `Authorization`，服务会实时拉取官网图片/视频模型配置并缓存结果。可使用 `?refresh=true` 强制刷新缓存，使用 `?type=image` 或 `?type=video` 只返回指定类型模型。
 
 ---
 

@@ -551,7 +551,11 @@ export function checkResult(result: AxiosResponse) {
  * @param authorization 认证字符串
  */
 export function tokenSplit(authorization: string) {
-  return authorization.replace("Bearer ", "").split(",");
+  return authorization
+    .replace(/^Bearer\s+/i, "")
+    .split(",")
+    .map((token) => token.trim())
+    .filter(Boolean);
 }
 
 /**

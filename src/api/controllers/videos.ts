@@ -5,11 +5,17 @@ import EX from "@/api/consts/exceptions.ts";
 import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
 import logger from "@/lib/logger.ts";
+import { JimengModelConfig, resolveVideoModelConfig } from "./models.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
-export const DEFAULT_MODEL = "jimeng-video-3.0";
-const DRAFT_VERSION = "3.2.8";
+export const DEFAULT_MODEL = "jimeng-video-seedance-2.0-mini";
+const DRAFT_VERSION = "3.3.20";
+const WEB_VERSION = "7.5.0";
 const MODEL_MAP = {
+  "jimeng-video-seedance-2.0-mini": "dreamina_seedance_40_mini",
+  "jimeng-video-seedance-2.0-fast": "dreamina_seedance_40_vision",
+  "jimeng-video-seedance-2.0-pro": "dreamina_seedance_40_pro_vision",
+  "jimeng-video-seedance-1.5-pro": "dreamina_ic_generate_video_model_vgfm_3.5_pro",
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
   "jimeng-video-3.0-fast": "dreamina_ic_generate_video_model_vgfm_3.0_fast",
@@ -19,6 +25,152 @@ const MODEL_MAP = {
 
 export function getModel(model: string) {
   return MODEL_MAP[model] || MODEL_MAP[DEFAULT_MODEL];
+}
+
+const VIDEO_MODEL_CONFIG: Record<
+  string,
+  {
+    defaultResolution: string;
+    supportedResolutions: string[];
+    benefits: Record<string, string>;
+    defaultBenefit: string;
+    supportsLongDuration: boolean;
+  }
+> = {
+  "jimeng-video-seedance-2.0-mini": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "seedance_20_mini_720p_output",
+    benefits: {
+      "720p": "seedance_20_mini_720p_output",
+    },
+    supportsLongDuration: true,
+  },
+  "jimeng-video-seedance-2.0-fast": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "seedance_20_fast_720p_output",
+    benefits: {
+      "720p": "seedance_20_fast_720p_output",
+    },
+    supportsLongDuration: true,
+  },
+  "jimeng-video-seedance-2.0-pro": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p", "1080p", "4k"],
+    defaultBenefit: "seedance_20_pro_720p_output",
+    benefits: {
+      "720p": "seedance_20_pro_720p_output",
+      "1080p": "seedance_20_pro_1080p_output",
+      "4k": "seedance_20_pro_4k_output",
+    },
+    supportsLongDuration: true,
+  },
+  "jimeng-video-seedance-1.5-pro": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "dreamina_video_seedance_15_pro",
+    benefits: {
+      "720p": "dreamina_video_seedance_15_pro",
+    },
+    supportsLongDuration: true,
+  },
+  "jimeng-video-3.0-pro": {
+    defaultResolution: "1080p",
+    supportedResolutions: ["1080p"],
+    defaultBenefit: "basic_video_operation_vgfm_v_three_pro",
+    benefits: {
+      "1080p": "basic_video_operation_vgfm_v_three_pro",
+    },
+    supportsLongDuration: true,
+  },
+  "jimeng-video-3.0-fast": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p", "1080p"],
+    defaultBenefit: "basic_video_operation_vgfm_v_three",
+    benefits: {
+      "720p": "basic_video_operation_vgfm_v_three",
+      "1080p": "basic_video_operation_vgfm_v_three_1080",
+    },
+    supportsLongDuration: true,
+  },
+};
+
+function getVideoModelConfig(model: string): JimengModelConfig {
+  return VIDEO_MODEL_CONFIG[model] || {
+    id: model,
+    type: "video",
+    name: model,
+    description: `Jimeng video model ${model}`,
+    modelReqKey: getModel(model),
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "basic_video_operation_vgfm_v_three",
+    benefits: {
+      "720p": "basic_video_operation_vgfm_v_three",
+    },
+    supportsLongDuration: model.includes("3.0"),
+  };
+}
+
+function getVideoCommerceInfoFromConfig(modelConfig: JimengModelConfig, resolution: string) {
+  const benefitType =
+    modelConfig.benefits?.[resolution] ||
+    modelConfig.defaultBenefit ||
+    "basic_video_operation_vgfm_v_three";
+  return {
+    benefit_type: benefitType,
+    resource_id: "generate_video",
+    resource_id_type: "str",
+    resource_sub_type: "aigc",
+  };
+}
+
+function getVideoResolutionFallbacks(
+  model: string,
+  requestedResolution?: string,
+  modelConfig?: JimengModelConfig
+) {
+  const config = modelConfig || getVideoModelConfig(model);
+  const resolutionPriority = ["4k", "1080p", "720p", "480p"];
+  const supportedResolutions = resolutionPriority.filter((resolution) =>
+    config.supportedResolutions.includes(resolution)
+  );
+  const startResolution = supportedResolutions.includes(requestedResolution || "")
+    ? requestedResolution
+    : config.defaultResolution;
+  const startIndex = Math.max(
+    0,
+    supportedResolutions.indexOf(startResolution || config.defaultResolution)
+  );
+  return supportedResolutions.slice(startIndex);
+}
+
+const VIDEO_PROCESSING_STATES = [20, 42, 45];
+
+function extractVideoUrlFromItemList(itemList: any[] = []) {
+  for (const item of itemList) {
+    const url =
+      item?.video?.transcoded_video?.origin?.video_url ||
+      item?.video?.play_url ||
+      item?.video?.download_url ||
+      item?.video?.url;
+    if (url) return url;
+  }
+}
+
+function extractVideoUrlFromResponse(result: any) {
+  const historyRecords = [
+    ...(result?.history_list || []),
+    ...(result?.history_records || []),
+  ];
+  for (const record of historyRecords) {
+    const url = extractVideoUrlFromItemList(record?.item_list || []);
+    if (url) return url;
+  }
+
+  const responseStr = JSON.stringify(result);
+  return responseStr.match(/https:\/\/[^"\s]+(?:vlabvod|vod)[^"\s]+/)?.[0];
 }
 
 // 视频支持的比例列表
@@ -101,7 +253,15 @@ export async function generateVideo(
   },
   refreshToken: string
 ) {
-  const model = getModel(_model);
+  const modelConfig = await resolveVideoModelConfig(_model, refreshToken);
+  const model = modelConfig.modelReqKey || getModel(_model);
+  let finalResolution = resolution;
+  if (!modelConfig.supportedResolutions.includes(finalResolution)) {
+    logger.warn(
+      `视频模型 ${_model} 不支持分辨率 ${resolution}，已调整为 ${modelConfig.defaultResolution}`
+    );
+    finalResolution = modelConfig.defaultResolution;
+  }
 
   // 比例逻辑：优先使用 ratio 参数，如果 ratio 是默认且 detecting logic kicks in, use detected.
   // 简化：如果 ratio 是 "custom" 或者在列表中，优先使用。
@@ -146,11 +306,11 @@ export async function generateVideo(
   }
 
   // 时长处理: 2.0系列只支持5秒，3.0系列支持5秒和10秒
-  const is3xModel = _model.includes("3.0");
+  const supportsLongDuration = modelConfig.supportsLongDuration;
   let finalDuration = duration;
 
   // 2.0系列强制5秒
-  if (!is3xModel) {
+  if (!supportsLongDuration) {
     finalDuration = 5;
     if (duration !== 5) {
       logger.info(`2.0系列模型只支持5秒，已自动调整`);
@@ -164,10 +324,14 @@ export async function generateVideo(
     }
   }
 
+  if (![5, 10].includes(finalDuration)) {
+    finalDuration = finalDuration > 5 ? 10 : 5;
+  }
+
   const durationMs = finalDuration === 5 ? 5000 : 10000;
 
   logger.info(
-    `使用模型: ${_model} 映射模型: ${model} 分辨率: ${resolution} 比例: ${videoAspectRatio} 时长: ${durationMs}ms (${finalDuration}秒)`
+    `使用模型: ${_model} 映射模型: ${model} 分辨率: ${finalResolution} 比例: ${videoAspectRatio} 时长: ${durationMs}ms (${finalDuration}秒)`
   );
 
   // 检查积分
@@ -248,6 +412,7 @@ export async function generateVideo(
     isRegenerate: false,
     originSubmitId: util.uuid(),
   });
+  const videoCommerceInfo = getVideoCommerceInfoFromConfig(modelConfig, finalResolution);
 
   // 构建请求参数
   const { aigc_data } = await request(
@@ -257,27 +422,15 @@ export async function generateVideo(
     {
       params: {
         aigc_features: "app_lip_sync",
-        web_version: "6.6.0",
+        web_version: WEB_VERSION,
         da_version: DRAFT_VERSION,
         web_component_open_flag: 1, // Added
       },
       data: {
         extend: {
           root_model: model,
-          m_video_commerce_info: {
-            benefit_type: "basic_video_operation_vgfm_v_three",
-            resource_id: "generate_video",
-            resource_id_type: "str",
-            resource_sub_type: "aigc",
-          },
-          m_video_commerce_info_list: [
-            {
-              benefit_type: "basic_video_operation_vgfm_v_three",
-              resource_id: "generate_video",
-              resource_id_type: "str",
-              resource_sub_type: "aigc",
-            },
-          ],
+          m_video_commerce_info: videoCommerceInfo,
+          m_video_commerce_info_list: [videoCommerceInfo],
         },
         submit_id: util.uuid(),
         metrics_extra: metricsExtra,
@@ -325,7 +478,7 @@ export async function generateVideo(
                         id: util.uuid(),
                         min_version: "3.0.5",
                         prompt: prompt,
-                        resolution: resolution,
+                        resolution: finalResolution,
                         type: "",
                         video_mode: 2,
                       },
@@ -346,7 +499,7 @@ export async function generateVideo(
 
   const historyId = aigc_data.history_record_id;
   if (!historyId)
-    throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
+    throw new APIException(EX.API_VIDEO_GENERATION_FAILED, "记录ID不存在");
 
   // 轮询获取结果
   let status = 20,
@@ -359,7 +512,7 @@ export async function generateVideo(
 
   logger.info(`开始轮询视频生成结果，历史ID: ${historyId}`);
 
-  while (status === 20 && retryCount < maxRetries) {
+  while (VIDEO_PROCESSING_STATES.includes(status) && retryCount < maxRetries) {
     try {
       const requestUrl = "/mweb/v1/get_history_by_ids";
       const requestData = { history_ids: [historyId] };
@@ -383,12 +536,8 @@ export async function generateVideo(
         });
       }
 
-      const responseStr = JSON.stringify(result);
-      // Quick extraction
-      const videoUrlMatch = responseStr.match(
-        /https:\/\/v[0-9]+-artist\.vlabvod\.com\/[^"\s]+/
-      );
-      if (videoUrlMatch && videoUrlMatch[0]) return videoUrlMatch[0];
+      const responseVideoUrl = extractVideoUrlFromResponse(result);
+      if (responseVideoUrl) return responseVideoUrl;
 
       // Parse history
       let historyData;
@@ -410,27 +559,25 @@ export async function generateVideo(
       item_list = historyData.item_list || [];
 
       // Extraction Check
-      let tempVideoUrl =
-        item_list?.[0]?.video?.transcoded_video?.origin?.video_url ||
-        item_list?.[0]?.video?.play_url ||
-        item_list?.[0]?.video?.download_url ||
-        item_list?.[0]?.video?.url;
+      const tempVideoUrl = extractVideoUrlFromItemList(item_list);
 
       if (tempVideoUrl) return tempVideoUrl; // Found it
 
       if (status === 30) {
         throw new APIException(
-          EX.API_IMAGE_GENERATION_FAILED,
+          EX.API_VIDEO_GENERATION_FAILED,
           `生成失败: ${failCode}`
         );
       }
 
-      if (status === 20) {
+      if (VIDEO_PROCESSING_STATES.includes(status)) {
+        retryCount++;
         await new Promise((r) =>
           setTimeout(r, 2000 * Math.min(retryCount + 1, 5))
         );
       }
     } catch (e) {
+      if (e instanceof APIException) throw e;
       logger.error(`轮询出错: ${e.message}`);
       retryCount++;
       await new Promise((r) => setTimeout(r, 5000));
@@ -439,13 +586,17 @@ export async function generateVideo(
 
   // Timeout
   if (retryCount >= maxRetries) {
-    throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "超时");
+    throw new APIException(EX.API_VIDEO_GENERATION_FAILED, "超时");
   }
 
   // Final Extraction (Redundant but safe)
-  let finalUrl = item_list?.[0]?.video?.transcoded_video?.origin?.video_url;
-  // ... fallback logic ...
-  return finalUrl;
+  const finalUrl = extractVideoUrlFromItemList(item_list);
+  if (finalUrl) return finalUrl;
+
+  throw new APIException(
+    EX.API_VIDEO_GENERATION_FAILED,
+    `视频生成结束但未返回可用URL，状态码: ${status}${failCode ? `，失败码: ${failCode}` : ""}`
+  );
 }
 
 /**
@@ -464,12 +615,17 @@ export async function generateVideoWithRetry(
   refreshToken: string
 ): Promise<string> {
   // 降级策略: 先降分辨率，再降时长
-  const resolutionLevels = ["1080p", "720p", "480p"];
+  const modelConfig = await resolveVideoModelConfig(_model, refreshToken);
+  const resolutionLevels = getVideoResolutionFallbacks(
+    _model,
+    options.resolution,
+    modelConfig
+  );
   const durationLevels = [10, 5];
 
   let currentResIndex = Math.max(
     0,
-    resolutionLevels.indexOf(options.resolution || "720p")
+    resolutionLevels.indexOf(resolutionLevels[0])
   );
   let currentDurIndex = Math.max(
     0,

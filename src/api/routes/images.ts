@@ -1,10 +1,12 @@
 import _ from "lodash";
 
 import Request from "@/lib/request/Request.ts";
-import { generateImagesWithRetry } from "@/api/controllers/images.ts";
+import { DEFAULT_MODEL, generateImagesWithRetry } from "@/api/controllers/images.ts";
 import { tokenSplit } from "@/api/controllers/core.ts";
 import util from "@/lib/util.ts";
 import db from "@/lib/database.ts";
+import APIException from "@/lib/exceptions/APIException.ts";
+import EX from "@/api/consts/exceptions.ts";
 
 export default {
   prefix: "/v1/images",
@@ -23,10 +25,13 @@ export default {
         .validate("headers.authorization", _.isString);
       // refresh_token切分
       const tokens = tokenSplit(request.headers.authorization);
+      if (tokens.length === 0) {
+        throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Authorization token is empty");
+      }
       // 随机挑选一个refresh_token
       const token = _.sample(tokens);
       const {
-        model = "jimeng-image-4.5",
+        model = DEFAULT_MODEL,
         prompt,
         negative_prompt: negativePrompt,
         ratio,
