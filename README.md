@@ -8,7 +8,6 @@
 
 > **本项目基于 [LLM-Red-Team/jimeng-free-api](https://github.com/LLM-Red-Team/jimeng-free-api) 二次开发，感谢原作者的贡献！**
 >
-> **请有项目交流需求的朋友 email 获取入群 QR，<zinanzhi@gmail.com>**
 
 </div>
 
