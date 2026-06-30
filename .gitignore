@@ -2,6 +2,7 @@ dist/
 node_modules/
 logs/
 .vercel
+.worktrees/
 
 # Database files
 data/
