@@ -58,6 +58,23 @@ try {
   $batchFiles = @(Get-ChildItem -LiteralPath (Join-Path $repo 'portable') -Filter '*.bat' -File)
   Assert-Equal $batchFiles.Count 3 'Expected three batch entry points'
 
+  $defaultConfig = Read-PortableConfig (Join-Path $repo 'portable\config\portable.env')
+  Assert-Equal $defaultConfig.PORT 8001 'Default port mismatch'
+  Assert-Equal $defaultConfig.HOST '0.0.0.0' 'Default host mismatch'
+  Assert-Equal $defaultConfig.AUTO_OPEN_BROWSER 1 'Browser default mismatch'
+
+  $systemConfig = Get-Content -Raw -Encoding UTF8 `
+    (Join-Path $repo 'portable\app-config\system.yml')
+  foreach ($required in @(
+    'logDir: ../logs',
+    'tmpDir: ../tmp',
+    'publicDir: ./public'
+  )) {
+    if ($systemConfig -notmatch [regex]::Escape($required)) {
+      throw "Missing system config: $required"
+    }
+  }
+
   Write-Host 'PASS: portable launcher unit tests'
 }
 finally {

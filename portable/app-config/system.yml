@@ -1,0 +1,7 @@
+requestLog: true
+tmpDir: ../tmp
+logDir: ../logs
+logWriteInterval: 200
+logFileExpires: 2626560000
+publicDir: ./public
+tmpFileExpires: 86400000
