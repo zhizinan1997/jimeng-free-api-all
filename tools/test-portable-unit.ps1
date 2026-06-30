@@ -46,6 +46,18 @@ try {
   $root = Get-PortableRoot (Join-Path $repo 'portable\scripts')
   Assert-Equal $root (Join-Path $repo 'portable') 'Portable root resolution failed'
 
+  foreach ($relative in @(
+    'portable\scripts\start.ps1',
+    'portable\scripts\stop.ps1',
+    'portable\scripts\view-logs.ps1'
+  )) {
+    if (-not (Test-Path -LiteralPath (Join-Path $repo $relative))) {
+      throw "Missing launcher: $relative"
+    }
+  }
+  $batchFiles = @(Get-ChildItem -LiteralPath (Join-Path $repo 'portable') -Filter '*.bat' -File)
+  Assert-Equal $batchFiles.Count 3 'Expected three batch entry points'
+
   Write-Host 'PASS: portable launcher unit tests'
 }
 finally {
