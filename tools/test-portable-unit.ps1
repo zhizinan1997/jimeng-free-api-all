@@ -75,6 +75,26 @@ try {
     }
   }
 
+  $builderPath = Join-Path $repo 'tools\build-portable.ps1'
+  if (-not (Test-Path -LiteralPath $builderPath -PathType Leaf)) {
+    throw 'Missing portable package builder'
+  }
+  $builder = Get-Content -Raw -Encoding UTF8 $builderPath
+  foreach ($required in @(
+    'v20.19.5',
+    'c48159529572a5a947eef2d55d6485dfdc4ce8e67216402e2f6de52ad5d95695',
+    'npm.cmd',
+    'ci',
+    'run',
+    'build',
+    '--omit=dev',
+    'better-sqlite3'
+  )) {
+    if ($builder -notmatch [regex]::Escape($required)) {
+      throw "Missing builder contract: $required"
+    }
+  }
+
   Write-Host 'PASS: portable launcher unit tests'
 }
 finally {
