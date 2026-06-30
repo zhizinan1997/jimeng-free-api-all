@@ -1,0 +1,53 @@
+$ErrorActionPreference = 'Stop'
+$repo = Split-Path $PSScriptRoot -Parent
+. (Join-Path $repo 'portable\scripts\common.ps1')
+
+function Assert-Equal($Actual, $Expected, [string]$Message) {
+  if ($Actual -ne $Expected) {
+    throw "$Message. Expected [$Expected], got [$Actual]."
+  }
+}
+
+function Assert-Throws([scriptblock]$Action, [string]$Pattern) {
+  try {
+    & $Action
+    throw "Expected an exception matching [$Pattern]."
+  }
+  catch {
+    if ($_.Exception.Message -notmatch $Pattern) {
+      throw
+    }
+  }
+}
+
+$temp = Join-Path $env:TEMP ('jimeng-unit-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $temp | Out-Null
+try {
+  $envFile = Join-Path $temp 'portable.env'
+  @('# comment', 'PORT=8123', 'HOST=127.0.0.1', 'AUTO_OPEN_BROWSER=0') |
+    Set-Content -Encoding UTF8 $envFile
+
+  $config = Read-PortableConfig $envFile
+  Assert-Equal $config.PORT 8123 'PORT parsing failed'
+  Assert-Equal $config.HOST '127.0.0.1' 'HOST parsing failed'
+  Assert-Equal $config.AUTO_OPEN_BROWSER 0 'AUTO_OPEN_BROWSER parsing failed'
+
+  'PORT=70000' | Set-Content -Encoding UTF8 $envFile
+  Assert-Throws { Read-PortableConfig $envFile } 'PORT'
+
+  @('PORT=8001', 'HOST=', 'AUTO_OPEN_BROWSER=1') |
+    Set-Content -Encoding UTF8 $envFile
+  Assert-Throws { Read-PortableConfig $envFile } 'HOST'
+
+  @('PORT=8001', 'HOST=0.0.0.0', 'AUTO_OPEN_BROWSER=yes') |
+    Set-Content -Encoding UTF8 $envFile
+  Assert-Throws { Read-PortableConfig $envFile } 'AUTO_OPEN_BROWSER'
+
+  $root = Get-PortableRoot (Join-Path $repo 'portable\scripts')
+  Assert-Equal $root (Join-Path $repo 'portable') 'Portable root resolution failed'
+
+  Write-Host 'PASS: portable launcher unit tests'
+}
+finally {
+  Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+}
