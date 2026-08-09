@@ -25,6 +25,7 @@ const WEB_VERSION = "7.5.0";
 const MODEL_CACHE_TTL_MS = Number(process.env.JIMENG_MODEL_CACHE_TTL_MS || 5 * 60 * 1000);
 
 const IMAGE_REQ_KEY_IDS: Record<string, string> = {
+  high_aes_general_v50p_large: "jimeng-image-5.0-pro",
   high_aes_general_v50: "jimeng-image-5.0-lite",
   high_aes_general_v43: "jimeng-image-4.7",
   high_aes_general_v42: "jimeng-image-4.6",
@@ -37,6 +38,7 @@ const IMAGE_REQ_KEY_IDS: Record<string, string> = {
 };
 
 const VIDEO_REQ_KEY_IDS: Record<string, string> = {
+  dreamina_seedance_45_pro: "jimeng-video-seedance-2.5",
   dreamina_seedance_40_mini: "jimeng-video-seedance-2.0-mini",
   dreamina_seedance_40_vision: "jimeng-video-seedance-2.0-fast",
   dreamina_seedance_40_pro_vision: "jimeng-video-seedance-2.0-pro",
@@ -49,6 +51,17 @@ const VIDEO_REQ_KEY_IDS: Record<string, string> = {
 };
 
 const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
+  {
+    id: "jimeng-image-5.0-pro",
+    type: "image",
+    name: "Seedream 5.0 Pro",
+    description: "Jimeng image generation model 5.0 Pro",
+    modelReqKey: "high_aes_general_v50p_large",
+    defaultResolution: "2k",
+    supportedResolutions: ["4k", "2k", "1.5k"],
+    benefitCountByResolution: { "2k": 8 },
+    source: "static",
+  },
   {
     id: "jimeng-image-5.0-lite",
     type: "image",
@@ -151,6 +164,17 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
 ];
 
 const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
+  {
+    id: "jimeng-video-seedance-2.5",
+    type: "video",
+    name: "Seedance 2.5",
+    description: "Jimeng Seedance 2.5 video generation model",
+    modelReqKey: "dreamina_seedance_45_pro",
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    supportsLongDuration: true,
+    source: "static",
+  },
   {
     id: "jimeng-video-seedance-2.0-mini",
     type: "video",
@@ -356,7 +380,7 @@ function collectResolutionStrings(value: any, out: string[] = [], seen = new Set
   if (!value) return out;
   if (typeof value === "string") {
     const normalized = value.toLowerCase();
-    if (/^(480p|720p|1080p|1k|2k|4k)$/.test(normalized) && !out.includes(normalized)) {
+    if (/^(480p|720p|1080p|1k|1\.5k|2k|4k)$/.test(normalized) && !out.includes(normalized)) {
       out.push(normalized);
     }
     return out;
@@ -383,6 +407,9 @@ function collectPreferredResolutions(value: any, path: string[] = [], out: strin
 
     if (isResolutionField && !isPriceOnlyField) {
       collectResolutionStrings(child, out);
+      if (child && typeof child === "object" && !Array.isArray(child)) {
+        collectResolutionStrings(Object.keys(child), out);
+      }
     }
 
     if (child && typeof child === "object") {
@@ -394,7 +421,7 @@ function collectPreferredResolutions(value: any, path: string[] = [], out: strin
 }
 
 function sortImageResolutions(resolutions: string[]) {
-  const priority = ["4k", "2k", "1k"];
+  const priority = ["4k", "2k", "1.5k", "1k"];
   return priority.filter((resolution) => resolutions.includes(resolution));
 }
 
@@ -531,9 +558,9 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
     supportedResolutions,
     benefits,
     defaultBenefit:
-      staticConfig?.defaultBenefit ||
       benefits[supportedResolutions[0]] ||
       Object.values(benefits)[0] ||
+      staticConfig?.defaultBenefit ||
       "basic_video_operation_vgfm_v_three",
     supportsLongDuration: staticConfig?.supportsLongDuration ?? true,
     source: "dynamic",
@@ -550,14 +577,14 @@ function uniqueModels(models: JimengModelConfig[]) {
   return [...byKey.values()];
 }
 
-async function fetchImageModelConfigs(refreshToken: string) {
+async function fetchImageModelConfigs(refreshToken: string, refresh = false) {
   const result = await request("post", "/mweb/v1/get_common_config", refreshToken, {
     params: {
       web_version: WEB_VERSION,
       da_version: DRAFT_VERSION,
       aigc_features: "app_lip_sync",
-      needCache: true,
-      needRefresh: false,
+      needCache: !refresh,
+      needRefresh: refresh,
     },
     data: {
       is_client_filter: false,
@@ -572,17 +599,19 @@ async function fetchImageModelConfigs(refreshToken: string) {
   );
 }
 
-async function fetchVideoModelConfigs(refreshToken: string) {
+async function fetchVideoModelConfigs(refreshToken: string, refresh = false) {
   const result = await request("post", "/mweb/v1/video_generate/get_common_config", refreshToken, {
     params: {
       web_version: WEB_VERSION,
       da_version: DRAFT_VERSION,
       aigc_features: "app_lip_sync",
+      needRefresh: refresh,
     },
     data: {
       scene: "generate_video",
       params: {
-        needCache: true,
+        needCache: !refresh,
+        needRefresh: refresh,
       },
     },
   });
@@ -603,8 +632,8 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
   }
 
   const results = await Promise.allSettled([
-    fetchImageModelConfigs(refreshToken),
-    fetchVideoModelConfigs(refreshToken),
+    fetchImageModelConfigs(refreshToken, refresh),
+    fetchVideoModelConfigs(refreshToken, refresh),
   ]);
   const models = results.flatMap((result) =>
     result.status === "fulfilled" ? result.value : []
@@ -634,10 +663,13 @@ function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: Jim
   const byId = new Map<string, JimengModelConfig>();
   const byReqKey = new Map<string, JimengModelConfig>();
 
+  const dynamicTypes = new Set(dynamicModels.map((model) => model.type));
   for (const model of staticModels) {
     const cloned = cloneModelConfig(model);
-    byId.set(cloned.id, cloned);
     byReqKey.set(`${cloned.type}:${cloned.modelReqKey}`, cloned);
+    if (dynamicModels.length === 0 || !dynamicTypes.has(model.type)) {
+      byId.set(cloned.id, cloned);
+    }
   }
 
   for (const model of dynamicModels) {
@@ -690,12 +722,16 @@ export async function resolveModelConfig(
   refreshToken?: string
 ) {
   const models = await listModelConfigs(refreshToken, { type });
-  return (
-    models.find(
+  const matched = models.find(
       (model) => model.id === modelIdOrReqKey || model.modelReqKey === modelIdOrReqKey
-    ) ||
-    getStaticModelConfig(type === "image" ? "jimeng-image-5.0-lite" : "jimeng-video-seedance-2.0-mini", type)!
   );
+  if (matched) return matched;
+  const staticMatch = getStaticModelConfig(modelIdOrReqKey, type);
+  if (staticMatch) return staticMatch;
+  return getStaticModelConfig(
+    type === "image" ? "jimeng-image-5.0-lite" : "jimeng-video-seedance-2.0-mini",
+    type
+  )!;
 }
 
 export function getStaticModelReqKey(

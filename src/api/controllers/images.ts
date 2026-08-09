@@ -14,6 +14,7 @@ const WEB_VERSION = "7.5.0";
 const MIN_VERSION = "3.0.2";
 
 const MODEL_MAP = {
+  "jimeng-image-5.0-pro": "high_aes_general_v50p_large",
   "jimeng-image-5.0-lite": "high_aes_general_v50",
   "jimeng-image-4.7": "high_aes_general_v43",
   "jimeng-image-4.6": "high_aes_general_v42",
@@ -39,6 +40,7 @@ function isHighResImageModel(modelName: string, modelConfig?: JimengModelConfig)
 
 function getImageResolutionLevels(modelName: string) {
   if (modelName === "jimeng-image-2.0-pro") return ["1k"];
+  if (modelName === "jimeng-image-5.0-pro") return ["4k", "2k", "1.5k"];
   if (isHighResImageModel(modelName)) return ["4k", "2k"];
   return ["1k"];
 }
@@ -111,6 +113,17 @@ const DIMENSIONS_2K: Record<string, { width: number; height: number }> = {
   "3:4": { width: 1728, height: 2304 },
   "2:3": { width: 1664, height: 2496 },
   "9:16": { width: 1440, height: 2560 },
+};
+
+const DIMENSIONS_1_5K: Record<string, { width: number; height: number }> = {
+  "21:9": { width: 2268, height: 972 },
+  "16:9": { width: 1920, height: 1080 },
+  "3:2": { width: 1872, height: 1248 },
+  "4:3": { width: 1728, height: 1296 },
+  "1:1": { width: 1536, height: 1536 },
+  "3:4": { width: 1296, height: 1728 },
+  "2:3": { width: 1248, height: 1872 },
+  "9:16": { width: 1080, height: 1920 },
 };
 
 const DIMENSIONS_4K: Record<string, { width: number; height: number }> = {
@@ -213,7 +226,7 @@ export async function generateImages(
   // 解析分辨率和比例
   const isHighResModel = isHighResImageModel(modelName, modelConfig);
   
-  let resolutionType = resolution; // 用户指定优先
+  let resolutionType = resolution.toLowerCase(); // 用户指定优先
 
   if (!modelConfig.supportedResolutions.includes(resolutionType)) {
     resolutionType = modelConfig.defaultResolution;
@@ -225,6 +238,8 @@ export async function generateImages(
   const dimensionMap =
     resolutionType === "4k"
       ? DIMENSIONS_4K
+      : resolutionType === "1.5k"
+      ? DIMENSIONS_1_5K
       : resolutionType === "2k"
       ? DIMENSIONS_2K
       : DIMENSIONS_1K;

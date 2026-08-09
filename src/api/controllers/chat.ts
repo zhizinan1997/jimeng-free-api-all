@@ -50,25 +50,54 @@ function isVideoModel(model: string) {
  */
 function extractImagesFromMessages(messages: any[]): string[] {
   const images: string[] = [];
+  const seen = new Set<string>();
+
+  const addImage = (value: unknown, mediaType = "image/png") => {
+    if (typeof value !== "string" || !value) return;
+    const normalized = value.startsWith("data:") || value.startsWith("http://") || value.startsWith("https://")
+      ? value
+      : `data:${mediaType};base64,${value}`;
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      images.push(normalized);
+    }
+  };
+
+  const collectImage = (value: any, mediaType = "image/png") => {
+    if (!value) return;
+    if (typeof value === "string") {
+      addImage(value, mediaType);
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(item => collectImage(item, mediaType));
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    if (typeof value.url === "string") addImage(value.url, mediaType);
+    if (typeof value.image_url === "string") addImage(value.image_url, mediaType);
+    else if (value.image_url) collectImage(value.image_url, mediaType);
+
+    if (value.source?.data) {
+      addImage(value.source.data, value.source.media_type || mediaType);
+    }
+    if (value.data && (value.type === "image" || value.type === "input_image")) {
+      addImage(value.data, value.media_type || mediaType);
+    }
+  };
 
   for (const message of messages) {
-    if (!message.content) continue;
-
-    // 如果 content 是数组（OpenAI 多模态格式）
-    if (Array.isArray(message.content)) {
-      for (const item of message.content) {
-        if (item.type === 'image_url' && item.image_url) {
-          // 支持 { type: "image_url", image_url: { url: "..." } } 格式
-          const url = item.image_url.url || item.image_url;
-          if (url && typeof url === 'string') {
-            images.push(url);
-          }
-        } else if (item.type === 'image' && item.url) {
-          // 支持 { type: "image", url: "..." } 格式
-          images.push(item.url);
-        }
-      }
+    if (!message || typeof message !== "object") continue;
+    if (Array.isArray(message.content) || typeof message.content === "object") {
+      collectImage(message.content);
+    } else if (typeof message.content === "string" && /^(data:|https?:\/\/)/i.test(message.content)) {
+      collectImage(message.content);
     }
+    collectImage(message.images);
+    collectImage(message.attachments);
+    collectImage(message.image_url);
+    collectImage(message.image);
   }
 
   logger.info(`从消息中提取到 ${images.length} 张图片`);

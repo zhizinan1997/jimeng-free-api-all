@@ -2,11 +2,9 @@ import _ from "lodash";
 
 import Request from "@/lib/request/Request.ts";
 import { DEFAULT_MODEL, generateImagesWithRetry } from "@/api/controllers/images.ts";
-import { tokenSplit } from "@/api/controllers/core.ts";
+import { markCredentialFailure, markCredentialSuccess, resolveAuthorization } from "@/api/controllers/auth.ts";
 import util from "@/lib/util.ts";
 import db from "@/lib/database.ts";
-import APIException from "@/lib/exceptions/APIException.ts";
-import EX from "@/api/consts/exceptions.ts";
 
 export default {
   prefix: "/v1/images",
@@ -24,12 +22,10 @@ export default {
         .validate("body.filePath", v => _.isUndefined(v) || _.isString(v))
         .validate("headers.authorization", _.isString);
       // refresh_token切分
-      const tokens = tokenSplit(request.headers.authorization);
-      if (tokens.length === 0) {
-        throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Authorization token is empty");
-      }
+      const credential = await resolveAuthorization(request.headers.authorization);
+      const token = credential.token;
+      const statsKey = credential.managedKey || token;
       // 随机挑选一个refresh_token
-      const token = _.sample(tokens);
       const {
         model = DEFAULT_MODEL,
         prompt,
@@ -55,19 +51,26 @@ export default {
       }
 
       const responseFormat = _.defaultTo(response_format, "url");
-      const imageUrls = await generateImagesWithRetry(model, prompt, {
-        ratio,
-        resolution,
-        sampleStrength,
-        negativePrompt,
-        filePath,
-      }, token);
+      let imageUrls;
+      try {
+        imageUrls = await generateImagesWithRetry(model, prompt, {
+          ratio,
+          resolution,
+          sampleStrength,
+          negativePrompt,
+          filePath,
+        }, token);
+        markCredentialSuccess(credential);
+      } catch (error) {
+        markCredentialFailure(credential);
+        throw error;
+      }
       
       // 记录统计和媒体
       try {
-        db.recordCall(token, model, 0);
+        db.recordCall(statsKey, model, 0);
         imageUrls.forEach(url => {
-          if (url) db.saveMedia('image', url, model, prompt, token);
+          if (url) db.saveMedia('image', url, model, prompt, statsKey);
         });
       } catch (e) {
         // 忽略数据库错误，不影响主流程

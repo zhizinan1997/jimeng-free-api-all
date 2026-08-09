@@ -322,12 +322,27 @@ export async function uploadFile(
   logger.info(`文件大小: ${fileData.length} bytes, 文件名: ${filename}`);
 
   // 获取上传令牌
-  const uploadAuth = await request(
-    'POST',
-    '/mweb/v1/get_upload_token?aid=513695&da_version=3.2.2&aigc_features=app_lip_sync',
-    refreshToken,
-    { data: { scene: 2 } }
-  );
+  // 旧版网页端的视频参考图使用 video_cover 场景；新版接口有时只接受数字场景 2。
+  // 先尝试视频场景，失败后回退到当前通用场景，兼容两代接口。
+  const uploadScenes: Array<string | number> = isVideoImage
+    ? ["video_cover", 2]
+    : [2];
+  let uploadAuth: any = null;
+  let lastUploadAuthError: any = null;
+  for (const scene of uploadScenes) {
+    try {
+      uploadAuth = await request(
+        'POST',
+        '/mweb/v1/get_upload_token?aid=513695&da_version=3.2.2&aigc_features=app_lip_sync',
+        refreshToken,
+        { data: { scene } }
+      );
+      if (uploadAuth?.access_key_id) break;
+    } catch (error) {
+      lastUploadAuthError = error;
+      logger.warn(`获取${isVideoImage ? "视频参考图" : "图片"}上传令牌失败，尝试兼容场景`);
+    }
+  }
 
   if (!uploadAuth || !uploadAuth.access_key_id) {
     throw new APIException(EX.API_REQUEST_FAILED, '获取上传凭证失败，账号可能已掉线');

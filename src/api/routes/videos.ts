@@ -2,12 +2,20 @@ import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
 import Response from '@/lib/response/Response.ts';
-import { tokenSplit } from '@/api/controllers/core.ts';
 import { generateVideoWithRetry, DEFAULT_MODEL } from '@/api/controllers/videos.ts';
+import { markCredentialFailure, markCredentialSuccess, resolveAuthorization } from '@/api/controllers/auth.ts';
 import util from '@/lib/util.ts';
 import db from '@/lib/database.ts';
-import APIException from '@/lib/exceptions/APIException.ts';
-import EX from '@/api/consts/exceptions.ts';
+
+function appendUploadedPaths(value: any, target: string[]) {
+    if (!value) return;
+    if (Array.isArray(value)) {
+        value.forEach(item => appendUploadedPaths(item, target));
+        return;
+    }
+    const path = value.filepath || value.path;
+    if (typeof path === 'string' && path) target.push(path);
+}
 
 export default {
 
@@ -27,12 +35,10 @@ export default {
                 .validate('headers.authorization', _.isString);
 
             // refresh_token切分
-            const tokens = tokenSplit(request.headers.authorization);
-            if (tokens.length === 0) {
-                throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "Authorization token is empty");
-            }
             // 随机挑选一个refresh_token
-            const token = _.sample(tokens);
+            const credential = await resolveAuthorization(request.headers.authorization);
+            const token = credential.token;
+            const statsKey = credential.managedKey || token;
 
             const {
                 model = DEFAULT_MODEL,
@@ -46,34 +52,35 @@ export default {
 
             // 处理文件上传
             let filePaths = [...file_paths];
-            // @ts-ignore
-            const files = request.files || {};
+            const files: Record<string, any> = request.files || {};
             if (!_.isEmpty(files)) {
-                _.forEach(files, (file) => {
-                    if (file) {
-                        const path = file.filepath || file.path;
-                        if (path) filePaths.push(path);
-                    }
-                });
+                Object.values(files).forEach(file => appendUploadedPaths(file, filePaths));
             }
 
             // 生成视频
-            const videoUrl = await generateVideoWithRetry(
-                model,
-                prompt,
-                {
-                    ratio,
-                    resolution,
-                    duration,
-                    filePaths
-                },
-                token
-            );
+            let videoUrl;
+            try {
+                videoUrl = await generateVideoWithRetry(
+                    model,
+                    prompt,
+                    {
+                        ratio,
+                        resolution,
+                        duration,
+                        filePaths
+                    },
+                    token
+                );
+                markCredentialSuccess(credential);
+            } catch (error) {
+                markCredentialFailure(credential);
+                throw error;
+            }
 
             // 记录统计和媒体
             try {
-                db.recordCall(token, model, 0);
-                if (videoUrl) db.saveMedia('video', videoUrl, model, prompt, token);
+                db.recordCall(statsKey, model, 0);
+                if (videoUrl) db.saveMedia('video', videoUrl, model, prompt, statsKey);
             } catch (e) {
                 // 忽略数据库错误
             }

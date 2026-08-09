@@ -12,6 +12,7 @@ export const DEFAULT_MODEL = "jimeng-video-seedance-2.0-mini";
 const DRAFT_VERSION = "3.3.20";
 const WEB_VERSION = "7.5.0";
 const MODEL_MAP = {
+  "jimeng-video-seedance-2.5": "dreamina_seedance_45_pro",
   "jimeng-video-seedance-2.0-mini": "dreamina_seedance_40_mini",
   "jimeng-video-seedance-2.0-fast": "dreamina_seedance_40_vision",
   "jimeng-video-seedance-2.0-pro": "dreamina_seedance_40_pro_vision",
@@ -37,6 +38,13 @@ const VIDEO_MODEL_CONFIG: Record<
     supportsLongDuration: boolean;
   }
 > = {
+  "jimeng-video-seedance-2.5": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "",
+    benefits: {},
+    supportsLongDuration: true,
+  },
   "jimeng-video-seedance-2.0-mini": {
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -97,7 +105,18 @@ const VIDEO_MODEL_CONFIG: Record<
 };
 
 function getVideoModelConfig(model: string): JimengModelConfig {
-  return VIDEO_MODEL_CONFIG[model] || {
+  const knownConfig = VIDEO_MODEL_CONFIG[model];
+  if (knownConfig) {
+    return {
+      id: model,
+      type: "video",
+      name: model,
+      description: `Jimeng video model ${model}`,
+      modelReqKey: getModel(model),
+      ...knownConfig,
+    };
+  }
+  return {
     id: model,
     type: "video",
     name: model,
@@ -250,6 +269,8 @@ export async function generateVideo(
     resolution?: string;
     duration?: number;
     filePaths?: string[];
+    width?: number;
+    height?: number;
   },
   refreshToken: string
 ) {
@@ -362,7 +383,7 @@ export async function generateVideo(
         const pathDesc = filePath.startsWith("data:")
           ? `base64图片`
           : filePath.substring(0, 80);
-        const uploadResult = await uploadFile(refreshToken, filePath);
+        const uploadResult = await uploadFile(refreshToken, filePath, true);
         if (uploadResult && uploadResult.image_uri) {
           uploadIDs.push(uploadResult.image_uri);
         }
@@ -377,7 +398,7 @@ export async function generateVideo(
     if (uploadIDs[0]) {
       first_frame_image = {
         format: "",
-        height: 1024, // Placeholder, 实际应根据 ratio
+        height: 0,
         id: util.uuid(),
         image_uri: uploadIDs[0],
         name: "",
@@ -385,13 +406,13 @@ export async function generateVideo(
         source_from: "upload",
         type: "image",
         uri: uploadIDs[0],
-        width: 1024,
+        width: 0,
       };
     }
     if (uploadIDs[1]) {
       end_frame_image = {
         format: "", // ... Same structure
-        height: 1024,
+        height: 0,
         id: util.uuid(),
         image_uri: uploadIDs[1],
         name: "",
@@ -399,7 +420,7 @@ export async function generateVideo(
         source_from: "upload",
         type: "image",
         uri: uploadIDs[1],
-        width: 1024,
+        width: 0,
       };
     }
   }
@@ -413,6 +434,10 @@ export async function generateVideo(
     originSubmitId: util.uuid(),
   });
   const videoCommerceInfo = getVideoCommerceInfoFromConfig(modelConfig, finalResolution);
+  const hasReferenceFrame = Boolean(first_frame_image || end_frame_image);
+  logger.info(
+    `视频请求参考图${hasReferenceFrame ? "已写入首/尾帧字段" : "未写入首/尾帧字段"}`
+  );
 
   // 构建请求参数
   const { aigc_data } = await request(
@@ -480,7 +505,8 @@ export async function generateVideo(
                         prompt: prompt,
                         resolution: finalResolution,
                         type: "",
-                        video_mode: 2,
+                        // 即梦网页端：0 是带首/尾帧的 V1 图生视频，2 是默认文生视频。
+                        video_mode: hasReferenceFrame ? 0 : 2,
                       },
                     ],
                   },

@@ -293,3 +293,13 @@ Authorization: Bearer sessionid_1,sessionid_2,sessionid_3
 <div align="center">
   <sub>Released under the MIT License.</sub>
 </div>
+
+## Managed API Keys and account pool
+
+The dashboard can create multiple `jm_...` API keys. Only a SHA-256 hash and a masked preview are stored. Keys can be enabled, disabled, or revoked independently from the dashboard.
+
+The account pool is available through `/account-pool`. It stores multiple Jimeng cookies encrypted with AES-256-GCM, supports account enable/disable, round-robin selection, failure cooldowns, and status refresh. Set `JIMENG_ACCOUNT_POOL_KEY` (or `ACCOUNT_POOL_ENCRYPTION_KEY`) before adding accounts; keep it stable across restarts.
+
+When a managed API key is sent in `Authorization: Bearer jm_...`, the service selects an enabled Jimeng account automatically. Direct Jimeng session tokens remain supported for backward compatibility.
+
+`GET /v1/account/status` returns the selected account's cached/refreshed membership and credit status without exposing its cookie.

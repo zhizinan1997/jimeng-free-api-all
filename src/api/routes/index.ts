@@ -8,6 +8,8 @@ import token from './token.js';
 import models from './models.ts';
 import videos from './videos.ts';
 import dashboard from './dashboard.ts';
+import accountPool from './account-pool.ts';
+import accountStatus from './account-status.ts';
 
 export default [
     {
@@ -39,5 +41,7 @@ export default [
     token,
     models,
     videos,
-    dashboard
+    dashboard,
+    accountPool,
+    accountStatus
 ];

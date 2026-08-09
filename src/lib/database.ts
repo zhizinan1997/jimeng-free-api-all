@@ -45,6 +45,17 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
   );
 
+  -- 管理端创建的 API Key（仅保存 hash，不保存原始 Key）
+  CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_preview TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    last_used TEXT
+  );
+
   -- 媒体记录表
   CREATE TABLE IF NOT EXISTS media (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,10 +77,27 @@ db.exec(`
 
   -- 创建索引
   CREATE INDEX IF NOT EXISTS idx_key_stats_key ON key_stats(key_hash);
+  CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled);
   CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
   CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC);
 `);
+
+// 兼容早期可能已经存在的 api_keys 表：新增列时不影响现有数据。
+const apiKeyColumns = db.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name: string }>;
+const apiKeyColumnNames = new Set(apiKeyColumns.map(column => column.name));
+const apiKeyMigrations: Array<[string, string]> = [
+  ['key_hash', "ALTER TABLE api_keys ADD COLUMN key_hash TEXT"],
+  ['key_preview', "ALTER TABLE api_keys ADD COLUMN key_preview TEXT DEFAULT ''"],
+  ['name', "ALTER TABLE api_keys ADD COLUMN name TEXT NOT NULL DEFAULT ''"],
+  ['enabled', "ALTER TABLE api_keys ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"],
+  ['created_at', "ALTER TABLE api_keys ADD COLUMN created_at TEXT DEFAULT (datetime('now', 'localtime'))"],
+  ['last_used', 'ALTER TABLE api_keys ADD COLUMN last_used TEXT']
+];
+for (const [column, statement] of apiKeyMigrations) {
+  if (!apiKeyColumnNames.has(column)) db.exec(statement);
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);');
 
 // 密码哈希
 export function hashPassword(password: string): string {
@@ -90,6 +118,70 @@ export function keyPreview(key: string): string {
 // Key哈希
 export function hashKey(key: string): string {
   return crypto.createHash('md5').update(key).digest('hex');
+}
+
+// 管理端 API Key 使用 SHA-256；key_stats 继续使用原有 MD5，保证历史统计兼容。
+function hashManagedApiKey(key: string): string {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
+
+function generateManagedApiKey(): string {
+  return `jm_${crypto.randomBytes(32).toString('base64url')}`;
+}
+
+export interface ManagedApiKey {
+  id: number;
+  key_preview: string;
+  name: string;
+  enabled: boolean;
+  created_at: string;
+  last_used: string | null;
+}
+
+export function createApiKey(name = ''): { key: string; apiKey: ManagedApiKey } {
+  const key = generateManagedApiKey();
+  const keyHash = hashManagedApiKey(key);
+  const preview = keyPreview(key);
+  const result = db.prepare(
+    'INSERT INTO api_keys (key_hash, key_preview, name, enabled) VALUES (?, ?, ?, 1)'
+  ).run(keyHash, preview, name.trim().slice(0, 100));
+  const apiKey = db.prepare(
+    'SELECT id, key_preview, name, enabled, created_at, last_used FROM api_keys WHERE id = ?'
+  ).get(result.lastInsertRowid) as any;
+  return { key, apiKey: { ...apiKey, enabled: Boolean(apiKey.enabled) } };
+}
+
+export function listApiKeys(): ManagedApiKey[] {
+  const rows = db.prepare(
+    'SELECT id, key_preview, name, enabled, created_at, last_used FROM api_keys ORDER BY id DESC'
+  ).all() as any[];
+  return rows.map(row => ({ ...row, enabled: Boolean(row.enabled) }));
+}
+
+export function setApiKeyEnabled(id: number, enabled: boolean): ManagedApiKey | null {
+  const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
+  if (!result.changes) return null;
+  const row = db.prepare(
+    'SELECT id, key_preview, name, enabled, created_at, last_used FROM api_keys WHERE id = ?'
+  ).get(id) as any;
+  return { ...row, enabled: Boolean(row.enabled) };
+}
+
+export function deleteApiKey(id: number): boolean {
+  return db.prepare('DELETE FROM api_keys WHERE id = ?').run(id).changes > 0;
+}
+
+export function touchApiKey(key: string): void {
+  db.prepare("UPDATE api_keys SET last_used = datetime('now', 'localtime') WHERE key_hash = ?")
+    .run(hashManagedApiKey(key));
+}
+
+export function validateApiKey(key: string): { valid: boolean; apiKeyId?: number } {
+  if (!key) return { valid: false };
+  const row = db.prepare('SELECT id, enabled FROM api_keys WHERE key_hash = ?')
+    .get(hashManagedApiKey(key)) as { id: number; enabled: number } | undefined;
+  if (!row || !row.enabled) return { valid: false };
+  return { valid: true, apiKeyId: row.id };
 }
 
 // ==================== 用户管理 ====================
@@ -145,6 +237,7 @@ export function recordCall(key: string, model: string, creditsUsed: number = 0, 
   console.log(`[DB] recordCall called: model=${model}, creditsUsed=${creditsUsed}, remainingCredits=${remainingCredits}`);
   const keyHash = hashKey(key);
   const preview = keyPreview(key);
+  touchApiKey(key);
   
   try {
     const existing = db.prepare('SELECT id, call_count, credits_used FROM key_stats WHERE key_hash = ? AND model = ?').get(keyHash, model) as { id: number; call_count: number; credits_used: number } | undefined;
@@ -256,6 +349,11 @@ export default {
   createSession,
   validateSession,
   deleteSession,
+  createApiKey,
+  listApiKeys,
+  setApiKeyEnabled,
+  deleteApiKey,
+  validateApiKey,
   recordCall,
   getStats,
   saveMedia,
