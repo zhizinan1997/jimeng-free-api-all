@@ -185,12 +185,14 @@ export async function generateImages(
     sampleStrength = 0.5,
     negativePrompt = "",
     filePath = "",
+    n = 1,
   }: {
     ratio?: string;
     resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
     filePath?: string; // 参考图路径，支持本地/网络
+    n?: number; // 生成张数 (1-8)
   },
   refreshToken: string
 ) {
@@ -398,7 +400,7 @@ export async function generateImages(
       ? undefined
       : JSON.stringify({
           promptSource: "custom",
-          generateCount: 1,
+          generateCount: n,
           enterFrom: "click",
           sceneOptions: JSON.stringify([
             {
@@ -451,6 +453,12 @@ export async function generateImages(
           generate_type: hasFilePath ? "blend" : "generate",
           aigc_mode: "workbench",
           abilities,
+          gen_option: {
+            type: "",
+            id: util.uuid(),
+            gen_count: n,
+            generate_all: false,
+          },
         },
       ],
     }),
@@ -629,7 +637,7 @@ export async function generateImages(
     if (!item?.image?.large_images?.[0]?.image_url)
       return item?.common_attr?.cover_url || null;
     return item.image.large_images[0].image_url;
-  });
+  }).slice(0, n);
 }
 
 /**
@@ -645,6 +653,7 @@ export async function generateImagesWithRetry(
     sampleStrength?: number;
     negativePrompt?: string;
     filePath?: string;
+    n?: number;
   },
   refreshToken: string
 ): Promise<string[]> {
