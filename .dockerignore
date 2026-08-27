@@ -14,6 +14,12 @@ logs
 dist
 node_modules
 
+# 运行时数据（账号池加密库、统计、日志）
+data
+*.db
+*.db-shm
+*.db-wal
+
 # 文档
 doc
 docs

@@ -1,27 +1,26 @@
 # 构建阶段
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
-# 安装编译 better-sqlite3 所需的工具
+# 安装编译 better-sqlite3 所需的工具（alpine 无预编译 musl 二进制）
 RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# 只复制依赖文件，利用 Docker 缓存
-COPY package.json yarn.lock ./
+# 只复制依赖文件，利用 Docker 缓存（package-lock.json 与本地 npm 安装保持一致）
+COPY package.json package-lock.json ./
 
-# 安装所有依赖（包括 devDependencies 用于构建）
-RUN yarn install --frozen-lockfile --registry https://registry.npmmirror.com/ --ignore-engines
+# 安装全部依赖（含 devDependencies 用于构建）
+RUN npm ci --registry https://registry.npmmirror.com/
 
 # 复制源代码并构建
 COPY . .
-RUN yarn run build
+RUN npm run build
 
 # 清理开发依赖，只保留生产依赖
-RUN rm -rf node_modules && \
-    yarn install --production --frozen-lockfile --registry https://registry.npmmirror.com/ --ignore-engines
+RUN rm -rf node_modules && npm ci --omit=dev --registry https://registry.npmmirror.com/
 
-# 最终运行镜像 - 使用更小的基础镜像
-FROM node:20-alpine
+# 最终运行镜像 - 更小的基础镜像
+FROM node:22-alpine
 
 # 安装运行时必需的库（better-sqlite3 需要）
 RUN apk add --no-cache libstdc++
@@ -41,6 +40,8 @@ RUN mkdir -p /app/data
 # 环境变量
 ENV NODE_ENV=production
 ENV DB_PATH=/app/data/jimeng.db
+# 账号池凭据加密密钥（务必设置并保持稳定，更换后无法解密旧账号）
+# ENV JIMENG_ACCOUNT_POOL_KEY=replace-with-a-long-random-secret
 
 # 持久化数据卷
 VOLUME ["/app/data"]
