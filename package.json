@@ -1,6 +1,6 @@
 {
   "name": "jimeng-free-api",
-  "version": "0.0.6",
+  "version": "1.2.6",
   "description": "🚀 免费的高级即梦(Jimeng) AI 接口服务，支持 4.x/3.x 图像模型和视频生成，OpenAI 兼容，内置可视化管理控制台。",
   "type": "module",
   "main": "dist/index.js",
