@@ -1,6 +1,9 @@
 dist/
 node_modules/
 logs/
+logs.txt
+logs*.txt
+*.log
 .vercel
 .worktrees/
 work/
