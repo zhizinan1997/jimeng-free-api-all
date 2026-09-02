@@ -4,9 +4,9 @@
 
 **Goal:** Build and verify a Windows 10/11 x64 ZIP that runs Jimeng Free API by double-click without requiring Node.js, npm, or Docker on the target PC.
 
-**Architecture:** A deterministic PowerShell build script downloads a pinned official Node.js 20 x64 runtime, builds the upstream TypeScript project, installs only production dependencies into a staging tree, and creates the ZIP. Thin UTF-8 batch entry points invoke PowerShell launchers; shared functions validate configuration and process ownership, while start/stop scripts manage only the bundled Node process through an owned PID file.
+**Architecture:** A deterministic PowerShell build script downloads a pinned official Node.js 22 x64 runtime, builds the upstream TypeScript project, installs only production dependencies into a staging tree, and creates the ZIP. Thin UTF-8 batch entry points invoke PowerShell launchers; shared functions validate configuration and process ownership, while start/stop scripts manage only the bundled Node process through an owned PID file.
 
-**Tech Stack:** Node.js 20.19.5 x64, npm lockfile installs, TypeScript/tsup, PowerShell 5.1, Windows batch files, `Compress-Archive`, HTTP `/ping` integration checks.
+**Tech Stack:** Node.js 22.23.2 x64, npm lockfile installs, TypeScript/tsup, PowerShell 5.1, Windows batch files, `Compress-Archive`, HTTP `/ping` integration checks.
 
 ---
 
@@ -394,7 +394,7 @@ git commit -m "docs: add portable configuration and guide"
 
 - [ ] **Step 1: Add a build-script contract test**
 
-The unit test must assert that `tools/build-portable.ps1` contains the pinned strings `v20.19.5`, SHA-256 `c48159529572a5a947eef2d55d6485dfdc4ce8e67216402e2f6de52ad5d95695`, `npm.cmd ci`, `npm.cmd run build`, `--omit=dev`, and `better-sqlite3`.
+The unit test must assert that `tools/build-portable.ps1` contains the pinned strings `v22.23.2`, SHA-256 `1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97`, `npm.cmd ci`, `npm.cmd run build`, `--omit=dev`, and `better-sqlite3`.
 
 - [ ] **Step 2: Verify the contract test fails**
 
@@ -405,13 +405,13 @@ Run unit tests; expect FAIL because the builder is missing.
 The script must:
 
 1. Create `work\portable-build` and `outputs` after resolving and checking both paths stay below the workspace root.
-2. Download `node-v20.19.5-win-x64.zip` and official `SHASUMS256.txt` from `https://nodejs.org/dist/v20.19.5/`.
+2. Download `node-v22.23.2-win-x64.zip` and official `SHASUMS256.txt` from `https://nodejs.org/dist/v22.23.2/`.
 3. Parse the official checksum line and verify `Get-FileHash -Algorithm SHA256`; abort on mismatch.
 4. Extract Node.js and copy the runtime to staging.
 5. Prepend staged runtime to `PATH`; run `runtime\npm.cmd ci` and `runtime\npm.cmd run build` in the repository.
 6. Copy `dist`, `public`, `package.json`, `package-lock.json`, portable launchers/config, `LICENSE`, and `README.md` into staging.
 7. Copy `portable\app-config` to `app\configs\portable`.
-8. Run staged `npm.cmd ci --omit=dev --ignore-scripts=false` in `app`.
+8. Run staged `npm.cmd ci --omit=dev --ignore-scripts` in `app`; `better-sqlite3` 13.x includes the native Windows x64 prebuild.
 9. Verify with `runtime\node.exe -e "const D=require('./app/node_modules/better-sqlite3'); const d=new D(':memory:'); d.exec('select 1'); d.close()"`.
 10. Remove runtime npm tooling, caches, and staging-only package metadata that are not needed to execute `node.exe`.
 11. Generate `版本信息.txt` containing upstream commit, package version, Node version, build time, and SHA-256 of the final ZIP.

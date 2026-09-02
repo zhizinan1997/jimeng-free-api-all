@@ -74,21 +74,16 @@ New-Item -ItemType Directory -Force -Path @(
   $OutputDirectory
 ) | Out-Null
 
-$nodeVersion = 'v20.19.5'
+$nodeVersion = 'v22.23.2'
 $nodeArchiveName = "node-$nodeVersion-win-x64.zip"
 $nodeBaseUrl = "https://nodejs.org/dist/$nodeVersion"
 $nodeArchive = Join-Path $downloads $nodeArchiveName
 $checksumFile = Join-Path $downloads 'SHASUMS256.txt'
-$expectedSha256 = 'c48159529572a5a947eef2d55d6485dfdc4ce8e67216402e2f6de52ad5d95695'
-$sqliteArchiveName = 'better-sqlite3-v11.10.0-node-v115-win32-x64.tar.gz'
-$sqliteArchiveUrl = "https://github.com/WiseLibs/better-sqlite3/releases/download/v11.10.0/$sqliteArchiveName"
-$sqliteArchive = Join-Path $downloads $sqliteArchiveName
-$sqliteSha256 = '090c06c7e3b003e5cf99cbd280b62d13a5fc9a80f7a5836f1ea3485e3cf85890'
+$expectedSha256 = '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97'
 
 Write-Host "Downloading Node.js $nodeVersion..."
 Invoke-Download "$nodeBaseUrl/$nodeArchiveName" $nodeArchive
 Invoke-Download "$nodeBaseUrl/SHASUMS256.txt" $checksumFile
-Invoke-Download $sqliteArchiveUrl $sqliteArchive
 
 $manifestLine = Get-Content -LiteralPath $checksumFile |
   Where-Object { $_ -match [regex]::Escape($nodeArchiveName) } |
@@ -103,10 +98,6 @@ if ($manifestSha256 -ne $expectedSha256) {
 $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeArchive).Hash.ToLowerInvariant()
 if ($actualSha256 -ne $expectedSha256) {
   throw "Downloaded Node.js archive checksum mismatch."
-}
-$actualSqliteSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $sqliteArchive).Hash.ToLowerInvariant()
-if ($actualSqliteSha256 -ne $sqliteSha256) {
-  throw "Downloaded better-sqlite3 archive checksum mismatch."
 }
 
 Expand-Archive -LiteralPath $nodeArchive -DestinationPath $extract -Force
@@ -159,9 +150,6 @@ Invoke-External $npmCmd @(
   '--no-audit',
   '--no-fund'
 ) (Join-Path $stage 'app')
-
-$sqliteModule = Join-Path $stage 'app\node_modules\better-sqlite3'
-Invoke-External 'tar.exe' @('-xzf', $sqliteArchive, '-C', $sqliteModule) $stage
 
 $nativeCheck = @"
 const Database = require('./app/node_modules/better-sqlite3');

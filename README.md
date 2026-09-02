@@ -163,7 +163,7 @@ cd jimeng-free-api-all
 
 ### 2. 安装依赖
 
-需要 Node.js 环境（推荐 v16+）：
+需要 Node.js 22 或更高版本：
 
 ```bash
 npm install

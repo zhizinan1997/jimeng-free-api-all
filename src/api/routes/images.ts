@@ -19,7 +19,7 @@ export default {
         .validate("body.resolution", v => _.isUndefined(v) || _.isString(v))
         .validate("body.sample_strength", v => _.isUndefined(v) || _.isFinite(v))
         .validate("body.response_format", v => _.isUndefined(v) || _.isString(v))
-        .validate("body.n", v => _.isUndefined(v) || (_.isNumber(v) && v >= 1 && v <= 8))
+        .validate("body.n", v => _.isUndefined(v) || (_.isInteger(v) && v >= 1 && v <= 8))
         .validate("body.filePath", v => _.isUndefined(v) || _.isString(v))
         .validate("headers.authorization", _.isString);
       // refresh_token切分

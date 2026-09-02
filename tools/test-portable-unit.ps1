@@ -81,8 +81,8 @@ try {
   }
   $builder = Get-Content -Raw -Encoding UTF8 $builderPath
   foreach ($required in @(
-    'v20.19.5',
-    'c48159529572a5a947eef2d55d6485dfdc4ce8e67216402e2f6de52ad5d95695',
+    'v22.23.2',
+    '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97',
     'npm.cmd',
     'ci',
     'run',
@@ -92,6 +92,14 @@ try {
   )) {
     if ($builder -notmatch [regex]::Escape($required)) {
       throw "Missing builder contract: $required"
+    }
+  }
+  foreach ($forbidden in @(
+    'v20.19.5',
+    'better-sqlite3-v11.10.0-node-v115'
+  )) {
+    if ($builder -match [regex]::Escape($forbidden)) {
+      throw "Stale builder contract: $forbidden"
     }
   }
 
