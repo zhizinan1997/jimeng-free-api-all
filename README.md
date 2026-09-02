@@ -15,6 +15,15 @@
 
 ## 更新日志
 
+### 2026-09-02（v1.2.6）
+
+- **支持多张图像参考图**：`/v1/images/generations` 支持 `filePath` 数组、`filePaths` 数组及 multipart 多文件上传；参考图按上传顺序传递给即梦，所有来源合计最多 10 张。
+- **修复便携版账号池密钥**：`portable/config/portable.env` 中的 `JIMENG_ACCOUNT_POOL_KEY` 或 `ACCOUNT_POOL_ENCRYPTION_KEY` 会在启动时传入服务进程，可正常配置账号池。
+- **修复 Seedance 2.0 模型路由**：普通 `Seedance 2.0` 与 `2.0 Fast` 不再误用 VIP Vision 通道；VIP 模型改为显式的 `jimeng-video-seedance-2.0-vip` 和 `jimeng-video-seedance-2.0-fast-vip`。
+- **完善 Seedance 2.0 时长支持**：2.0 系列默认生成 5 秒视频，支持 4~15 秒整数时长，并按模型能力做降级重试；日志会记录实际模型与计费类型。
+- **图像生成数量可控**：`n` 支持 1~8，默认 1 张，生成数量会透传至即梦并按请求数量返回。
+- **升级运行时兼容性**：项目与 Windows 便携包统一使用 Node.js 22+，匹配 `better-sqlite3` 13 的原生模块要求。
+
 ### 2026-08-09
 
 - **新增 API Key 管理**：管理端支持创建多个 `jm_...` 调用 Key，并支持单独启用、禁用和撤销。
