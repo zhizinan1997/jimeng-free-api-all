@@ -79,6 +79,9 @@ JIMENG_ACCOUNT_POOL_KEY=你的密钥
 ACCOUNT_POOL_ENCRYPTION_KEY=你的密钥
 ```
 
+便携版请将其中一个密钥直接写入 `portable/config/portable.env`，例如
+`JIMENG_ACCOUNT_POOL_KEY=long-random-secret`。密钥可以是任意非空字符串，但必须在重启间保持不变。
+
 ---
 
 ## 3. 快速开始
@@ -146,9 +149,10 @@ OpenAI Images API 兼容。支持文本生图与参考图（图生图）两种�
 | `sample_strength` | number | 否 | `0.5` | 生成精细度（0~1） |
 | `n` | number | 否 | `1` | 生成张数（1~8），透传即梦 `gen_option.gen_count` |
 | `response_format` | string | 否 | `url` | `url` 或 `b64_json` |
-| `filePath` | string | 否 | 空 | 参考图：本地路径、http(s) URL 或 `data:image/...;base64,...` |
+| `filePath` | string / string[] | 否 | 空 | 参考图：本地路径、http(s) URL 或 `data:image/...;base64,...` |
+| `filePaths` | string[] | 否 | 空 | `filePath` 的数组别名，可与 `filePath` 合用 |
 
-也支持 `multipart/form-data` 上传参考图：文件字段名任意，服务取第一个文件。
+也支持 `multipart/form-data` 上传参考图：文件字段名任意，服务会按上传顺序读取所有文件。所有来源合计最多 10 张参考图。
 
 #### 请求示例
 
@@ -170,7 +174,10 @@ curl -X POST http://localhost:8000/v1/images/generations \
 {
   "model": "jimeng-image-4.7",
   "prompt": "把参考图变成梵高风格",
-  "filePath": "D:\\images\\input.png"
+  "filePaths": [
+    "D:\\images\\subject.png",
+    "D:\\images\\style.png"
+  ]
 }
 ```
 
@@ -196,11 +203,11 @@ curl -X POST http://localhost:8000/v1/images/generations \
 
 | 参数 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `model` | string | 否 | `jimeng-video-seedance-2.0-mini` | 视频模型 ID |
+| `model` | string | 否 | `jimeng-video-seedance-2.0` | 视频模型 ID |
 | `prompt` | string | 是 | - | 提示词 |
 | `ratio` | string | 否 | 模型默认 | `16:9` `9:16` `1:1` `4:3` `3:4` `21:9` |
 | `resolution` | string | 否 | `720p` | `720p` `1080p` `4k`（按模型支持） |
-| `duration` | number | 否 | `10` | 时长秒数：`5` 或 `10` |
+| `duration` | integer | 否 | 模型默认 | 时长秒数；Seedance 2.0 系列默认 5 秒，支持 4~15 秒；其他模型通常支持 5 或 10 秒 |
 | `file_paths` | string[] | 否 | `[]` | 首尾帧参考图：本地路径 / URL / base64 |
 | `response_format` | string | 否 | `url` | `url` 或 `b64_json` |
 
@@ -213,7 +220,7 @@ curl -X POST http://localhost:8000/v1/videos/generations \
   -H "Authorization: Bearer jm_xxx" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "jimeng-video-seedance-2.0-pro",
+    "model": "jimeng-video-seedance-2.0",
     "prompt": "女孩在沙滩奔跑，夕阳逆光",
     "duration": 10
   }'
@@ -281,7 +288,7 @@ OpenAI Chat Completions 兼容。根据模型自动路由到图像或视频生�
 
 ```json
 {
-  "model": "jimeng-video-seedance-2.0-pro",
+  "model": "jimeng-video-seedance-2.0",
   "messages": [
     { "role": "user", "content": "一只奔跑的柴犬，5秒" }
   ]
@@ -420,9 +427,12 @@ curl -X POST http://localhost:8000/token/points \
 | 模型 ID | 说明 | 分辨率 | 时长 |
 |---|---|---|---|
 | `jimeng-video-seedance-2.5` | Seedance 2.5 | 720p | 5s / 10s |
-| `jimeng-video-seedance-2.0-pro` | Seedance 2.0 Pro | 720p / 1080p / 4K | 5s / 10s |
-| `jimeng-video-seedance-2.0-fast` | Seedance 2.0 Fast | 720p | 5s / 10s |
-| `jimeng-video-seedance-2.0-mini` | Seedance 2.0 Mini（默认） | 720p | 5s / 10s |
+| `jimeng-video-seedance-2.0` | Seedance 2.0（默认） | 720p | 4s ~ 15s（默认 5s） |
+| `jimeng-video-seedance-2.0-pro` | `jimeng-video-seedance-2.0` 的兼容别名 | 720p | 4s ~ 15s（默认 5s） |
+| `jimeng-video-seedance-2.0-fast` | Seedance 2.0 Fast | 720p | 4s ~ 15s（默认 5s） |
+| `jimeng-video-seedance-2.0-mini` | Seedance 2.0 Mini | 720p | 4s ~ 15s（默认 5s） |
+| `jimeng-video-seedance-2.0-fast-vip` | Seedance 2.0 Fast VIP Vision（会员通道） | 720p | 4s ~ 15s（默认 5s） |
+| `jimeng-video-seedance-2.0-vip` | Seedance 2.0 VIP Vision（会员通道） | 720p / 1080p / 4K | 4s ~ 15s（默认 5s） |
 | `jimeng-video-seedance-1.5-pro` | Seedance 1.5 Pro | 720p | 5s / 10s |
 | `jimeng-video-3.0-pro` | 3.0 Pro | 720p | 5s / 10s |
 | `jimeng-video-3.0` | 3.0 标准 | 720p | 5s / 10s |
@@ -430,7 +440,7 @@ curl -X POST http://localhost:8000/token/points \
 | `jimeng-video-s2.0` | S2.0 轻量 | 720p | 5s |
 | `jimeng-video-2.0-pro` | 2.0 Pro | 720p | 5s |
 
-> 提示词含 `5秒` / `10秒` 关键词可自动控制视频时长；含 `横屏` / `竖屏` / `方形` 或比例数字可自动识别尺寸。
+> 未传 `duration` 时，提示词中的 `5秒` / `10秒` 关键词会控制支持该时长的模型；Seedance 2.0 可直接传 4~15 的整数秒。提示词含 `横屏` / `竖屏` / `方形` 或比例数字可自动识别尺寸。
 
 ---
 

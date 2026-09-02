@@ -24,13 +24,22 @@ $temp = Join-Path $env:TEMP ('jimeng-unit-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
   $envFile = Join-Path $temp 'portable.env'
-  @('# comment', 'PORT=8123', 'HOST=127.0.0.1', 'AUTO_OPEN_BROWSER=0') |
+  @(
+    '# comment',
+    'PORT=8123',
+    'HOST=127.0.0.1',
+    'AUTO_OPEN_BROWSER=0',
+    'JIMENG_ACCOUNT_POOL_KEY=portable-secret',
+    'ACCOUNT_POOL_ENCRYPTION_KEY=compatibility-secret'
+  ) |
     Set-Content -Encoding UTF8 $envFile
 
   $config = Read-PortableConfig $envFile
   Assert-Equal $config.PORT 8123 'PORT parsing failed'
   Assert-Equal $config.HOST '127.0.0.1' 'HOST parsing failed'
   Assert-Equal $config.AUTO_OPEN_BROWSER 0 'AUTO_OPEN_BROWSER parsing failed'
+  Assert-Equal $config.JIMENG_ACCOUNT_POOL_KEY 'portable-secret' 'Account pool key parsing failed'
+  Assert-Equal $config.ACCOUNT_POOL_ENCRYPTION_KEY 'compatibility-secret' 'Compatibility key parsing failed'
 
   'PORT=70000' | Set-Content -Encoding UTF8 $envFile
   Assert-Throws { Read-PortableConfig $envFile } 'PORT'
@@ -62,6 +71,16 @@ try {
   Assert-Equal $defaultConfig.PORT 8001 'Default port mismatch'
   Assert-Equal $defaultConfig.HOST '0.0.0.0' 'Default host mismatch'
   Assert-Equal $defaultConfig.AUTO_OPEN_BROWSER 1 'Browser default mismatch'
+
+  $startScript = Get-Content -Raw -Encoding UTF8 (Join-Path $repo 'portable\scripts\start.ps1')
+  foreach ($required in @(
+    'JIMENG_ACCOUNT_POOL_KEY',
+    'ACCOUNT_POOL_ENCRYPTION_KEY'
+  )) {
+    if ($startScript -notmatch [regex]::Escape($required)) {
+      throw "Missing portable account pool configuration: $required"
+    }
+  }
 
   $systemConfig = Get-Content -Raw -Encoding UTF8 `
     (Join-Path $repo 'portable\app-config\system.yml')

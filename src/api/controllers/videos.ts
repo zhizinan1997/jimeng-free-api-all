@@ -8,14 +8,24 @@ import logger from "@/lib/logger.ts";
 import { JimengModelConfig, resolveVideoModelConfig } from "./models.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
-export const DEFAULT_MODEL = "jimeng-video-seedance-2.0-mini";
+export const DEFAULT_MODEL = "jimeng-video-seedance-2.0";
 const DRAFT_VERSION = "3.3.20";
 const WEB_VERSION = "7.5.0";
+const DEFAULT_VIDEO_DURATIONS = [5, 10];
+const SEEDANCE_2_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const MODEL_MAP = {
   "jimeng-video-seedance-2.5": "dreamina_seedance_45_pro",
   "jimeng-video-seedance-2.0-mini": "dreamina_seedance_40_mini",
-  "jimeng-video-seedance-2.0-fast": "dreamina_seedance_40_vision",
-  "jimeng-video-seedance-2.0-pro": "dreamina_seedance_40_pro_vision",
+  "jimeng-video-seedance-2.0": "dreamina_seedance_40_pro",
+  "seedance-2.0": "dreamina_seedance_40_pro",
+  "seedance-2.0-pro": "dreamina_seedance_40_pro",
+  "jimeng-video-seedance-2.0-pro": "dreamina_seedance_40_pro",
+  "jimeng-video-seedance-2.0-fast": "dreamina_seedance_40",
+  "seedance-2.0-fast": "dreamina_seedance_40",
+  "jimeng-video-seedance-2.0-fast-vip": "dreamina_seedance_40_vision",
+  "seedance-2.0-fast-vip": "dreamina_seedance_40_vision",
+  "jimeng-video-seedance-2.0-vip": "dreamina_seedance_40_pro_vision",
+  "seedance-2.0-vip": "dreamina_seedance_40_pro_vision",
   "jimeng-video-seedance-1.5-pro": "dreamina_ic_generate_video_model_vgfm_3.5_pro",
   "jimeng-video-3.0-pro": "dreamina_ic_generate_video_model_vgfm_3.0_pro",
   "jimeng-video-3.0": "dreamina_ic_generate_video_model_vgfm_3.0",
@@ -36,6 +46,8 @@ const VIDEO_MODEL_CONFIG: Record<
     benefits: Record<string, string>;
     defaultBenefit: string;
     supportsLongDuration: boolean;
+    defaultDuration?: number;
+    supportedDurations?: number[];
   }
 > = {
   "jimeng-video-seedance-2.5": {
@@ -53,8 +65,32 @@ const VIDEO_MODEL_CONFIG: Record<
       "720p": "seedance_20_mini_720p_output",
     },
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
   },
   "jimeng-video-seedance-2.0-fast": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "dreamina_seedance_20_fast",
+    benefits: {
+      "720p": "dreamina_seedance_20_fast",
+    },
+    supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
+  },
+  "jimeng-video-seedance-2.0": {
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    defaultBenefit: "dreamina_video_seedance_20_pro",
+    benefits: {
+      "720p": "dreamina_video_seedance_20_pro",
+    },
+    supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
+  },
+  "jimeng-video-seedance-2.0-fast-vip": {
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
     defaultBenefit: "seedance_20_fast_720p_output",
@@ -62,8 +98,10 @@ const VIDEO_MODEL_CONFIG: Record<
       "720p": "seedance_20_fast_720p_output",
     },
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
   },
-  "jimeng-video-seedance-2.0-pro": {
+  "jimeng-video-seedance-2.0-vip": {
     defaultResolution: "720p",
     supportedResolutions: ["720p", "1080p", "4k"],
     defaultBenefit: "seedance_20_pro_720p_output",
@@ -73,6 +111,8 @@ const VIDEO_MODEL_CONFIG: Record<
       "4k": "seedance_20_pro_4k_output",
     },
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
   },
   "jimeng-video-seedance-1.5-pro": {
     defaultResolution: "720p",
@@ -143,6 +183,41 @@ function getVideoCommerceInfoFromConfig(modelConfig: JimengModelConfig, resoluti
     resource_id_type: "str",
     resource_sub_type: "aigc",
   };
+}
+
+function getSupportedVideoDurations(modelConfig: JimengModelConfig) {
+  const configuredDurations = (modelConfig.supportedDurations || []).filter(
+    (duration) => Number.isInteger(duration) && duration > 0
+  );
+  if (configuredDurations.length > 0) {
+    return [...new Set(configuredDurations)].sort((a, b) => a - b);
+  }
+  return modelConfig.supportsLongDuration ? DEFAULT_VIDEO_DURATIONS : [5];
+}
+
+function getDefaultVideoDuration(modelConfig: JimengModelConfig) {
+  const supportedDurations = getSupportedVideoDurations(modelConfig);
+  if (modelConfig.defaultDuration && supportedDurations.includes(modelConfig.defaultDuration)) {
+    return modelConfig.defaultDuration;
+  }
+  return supportedDurations.includes(10) ? 10 : supportedDurations[0];
+}
+
+function normalizeVideoDuration(duration: number | undefined, modelConfig: JimengModelConfig) {
+  const supportedDurations = getSupportedVideoDurations(modelConfig);
+  if (Number.isInteger(duration) && supportedDurations.includes(duration!)) {
+    return duration!;
+  }
+  return getDefaultVideoDuration(modelConfig);
+}
+
+function getVideoDurationFallbacks(modelConfig: JimengModelConfig, requestedDuration?: number) {
+  const initialDuration = normalizeVideoDuration(requestedDuration, modelConfig);
+  const defaultDuration = getDefaultVideoDuration(modelConfig);
+  const minimumDuration = Math.min(...getSupportedVideoDurations(modelConfig));
+  return [...new Set([initialDuration, defaultDuration, minimumDuration])].filter(
+    (duration) => duration <= initialDuration
+  );
 }
 
 function getVideoResolutionFallbacks(
@@ -262,7 +337,7 @@ export async function generateVideo(
   {
     ratio = "16:9",
     resolution = "720p",
-    duration = 10,
+    duration,
     filePaths = [],
   }: {
     ratio?: string;
@@ -326,30 +401,20 @@ export async function generateVideo(
     videoAspectRatio = ratio;
   }
 
-  // 时长处理: 2.0系列只支持5秒，3.0系列支持5秒和10秒
-  const supportsLongDuration = modelConfig.supportsLongDuration;
-  let finalDuration = duration;
-
-  // 2.0系列强制5秒
-  if (!supportsLongDuration) {
-    finalDuration = 5;
-    if (duration !== 5) {
-      logger.info(`2.0系列模型只支持5秒，已自动调整`);
-    }
-  } else {
-    // 3.0系列: 检测提示词中的时长
+  const requestedDuration = duration;
+  let finalDuration = normalizeVideoDuration(requestedDuration, modelConfig);
+  if (requestedDuration !== undefined && requestedDuration !== finalDuration) {
+    logger.warn(
+      `视频模型 ${_model} 不支持 ${requestedDuration} 秒，已调整为 ${finalDuration} 秒`
+    );
+  } else if (requestedDuration === undefined && finalDuration === 10) {
     const detectedDuration = detectVideoDuration(prompt);
-    if (detectedDuration !== null && duration === 10) {
-      // 如果参数是默认值且 prompt 中有显式指定，使用 prompt 中的值
-      finalDuration = detectedDuration;
+    if (detectedDuration !== null) {
+      finalDuration = normalizeVideoDuration(detectedDuration, modelConfig);
     }
   }
 
-  if (![5, 10].includes(finalDuration)) {
-    finalDuration = finalDuration > 5 ? 10 : 5;
-  }
-
-  const durationMs = finalDuration === 5 ? 5000 : 10000;
+  const durationMs = finalDuration * 1000;
 
   logger.info(
     `使用模型: ${_model} 映射模型: ${model} 分辨率: ${finalResolution} 比例: ${videoAspectRatio} 时长: ${durationMs}ms (${finalDuration}秒)`
@@ -434,6 +499,9 @@ export async function generateVideo(
     originSubmitId: util.uuid(),
   });
   const videoCommerceInfo = getVideoCommerceInfoFromConfig(modelConfig, finalResolution);
+  logger.info(
+    `视频模型配置: source=${modelConfig.source || "static"}, benefit_type=${videoCommerceInfo.benefit_type}, 可用时长=${getSupportedVideoDurations(modelConfig).join(",")}秒`
+  );
   const hasReferenceFrame = Boolean(first_frame_image || end_frame_image);
   logger.info(
     `视频请求参考图${hasReferenceFrame ? "已写入首/尾帧字段" : "未写入首/尾帧字段"}`
@@ -647,16 +715,13 @@ export async function generateVideoWithRetry(
     options.resolution,
     modelConfig
   );
-  const durationLevels = [10, 5];
+  const durationLevels = getVideoDurationFallbacks(modelConfig, options.duration);
 
   let currentResIndex = Math.max(
     0,
     resolutionLevels.indexOf(resolutionLevels[0])
   );
-  let currentDurIndex = Math.max(
-    0,
-    durationLevels.indexOf(options.duration || 10)
-  );
+  let currentDurIndex = 0;
 
   while (currentResIndex < resolutionLevels.length) {
     while (currentDurIndex < durationLevels.length) {

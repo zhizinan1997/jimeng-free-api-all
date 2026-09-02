@@ -29,7 +29,7 @@ export default {
                 .validate('body.prompt', _.isString)
                 .validate('body.ratio', v => _.isUndefined(v) || _.isString(v))
                 .validate('body.resolution', v => _.isUndefined(v) || _.isString(v))
-                .validate('body.duration', v => _.isUndefined(v) || _.isFinite(v))
+                .validate('body.duration', v => _.isUndefined(v) || _.isInteger(v))
                 .validate('body.file_paths', v => _.isUndefined(v) || _.isArray(v))
                 .validate('body.response_format', v => _.isUndefined(v) || _.isString(v))
                 .validate('headers.authorization', _.isString);
@@ -45,7 +45,7 @@ export default {
                 prompt,
                 ratio,
                 resolution,
-                duration = 10,
+                duration,
                 file_paths = [],
                 response_format = "url"
             } = request.body;

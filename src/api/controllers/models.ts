@@ -10,12 +10,15 @@ export interface JimengModelConfig {
   name: string;
   description: string;
   modelReqKey: string;
+  aliases?: string[];
   defaultResolution: string;
   supportedResolutions: string[];
   benefits?: Record<string, string>;
   defaultBenefit?: string;
   benefitCountByResolution?: Record<string, number>;
   supportsLongDuration?: boolean;
+  defaultDuration?: number;
+  supportedDurations?: number[];
   source?: "static" | "dynamic";
   raw?: any;
 }
@@ -23,6 +26,7 @@ export interface JimengModelConfig {
 const DRAFT_VERSION = "3.3.20";
 const WEB_VERSION = "7.5.0";
 const MODEL_CACHE_TTL_MS = Number(process.env.JIMENG_MODEL_CACHE_TTL_MS || 5 * 60 * 1000);
+const SEEDANCE_2_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
 const IMAGE_REQ_KEY_IDS: Record<string, string> = {
   high_aes_general_v50p_large: "jimeng-image-5.0-pro",
@@ -40,8 +44,10 @@ const IMAGE_REQ_KEY_IDS: Record<string, string> = {
 const VIDEO_REQ_KEY_IDS: Record<string, string> = {
   dreamina_seedance_45_pro: "jimeng-video-seedance-2.5",
   dreamina_seedance_40_mini: "jimeng-video-seedance-2.0-mini",
-  dreamina_seedance_40_vision: "jimeng-video-seedance-2.0-fast",
-  dreamina_seedance_40_pro_vision: "jimeng-video-seedance-2.0-pro",
+  dreamina_seedance_40: "jimeng-video-seedance-2.0-fast",
+  dreamina_seedance_40_pro: "jimeng-video-seedance-2.0",
+  dreamina_seedance_40_vision: "jimeng-video-seedance-2.0-fast-vip",
+  dreamina_seedance_40_pro_vision: "jimeng-video-seedance-2.0-vip",
   "dreamina_ic_generate_video_model_vgfm_3.5_pro": "jimeng-video-seedance-1.5-pro",
   "dreamina_ic_generate_video_model_vgfm_3.0_pro": "jimeng-video-3.0-pro",
   "dreamina_ic_generate_video_model_vgfm_3.0": "jimeng-video-3.0",
@@ -186,29 +192,67 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     benefits: { "720p": "seedance_20_mini_720p_output" },
     defaultBenefit: "seedance_20_mini_720p_output",
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
     source: "static",
   },
   {
     id: "jimeng-video-seedance-2.0-fast",
     type: "video",
-    name: "Seedance 2.0 Fast VIP",
-    description: "Jimeng Seedance 2.0 Fast VIP video generation model",
-    modelReqKey: "dreamina_seedance_40_vision",
+    name: "Seedance 2.0 Fast",
+    description: "Jimeng Seedance 2.0 Fast video generation model",
+    modelReqKey: "dreamina_seedance_40",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
-    benefits: { "720p": "seedance_20_fast_720p_output" },
-    defaultBenefit: "seedance_20_fast_720p_output",
+    aliases: ["seedance-2.0-fast"],
+    benefits: { "720p": "dreamina_seedance_20_fast" },
+    defaultBenefit: "dreamina_seedance_20_fast",
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0-pro",
+    id: "jimeng-video-seedance-2.0",
     type: "video",
-    name: "Seedance 2.0 VIP",
-    description: "Jimeng Seedance 2.0 VIP video generation model",
+    name: "Seedance 2.0",
+    description: "Jimeng Seedance 2.0 video generation model",
+    modelReqKey: "dreamina_seedance_40_pro",
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    aliases: ["seedance-2.0", "seedance-2.0-pro", "jimeng-video-seedance-2.0-pro"],
+    benefits: { "720p": "dreamina_video_seedance_20_pro" },
+    defaultBenefit: "dreamina_video_seedance_20_pro",
+    supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
+    source: "static",
+  },
+  {
+    id: "jimeng-video-seedance-2.0-fast-vip",
+    type: "video",
+    name: "Seedance 2.0 Fast VIP Vision",
+    description: "Jimeng Seedance 2.0 Fast VIP Vision video generation model",
+    modelReqKey: "dreamina_seedance_40_vision",
+    defaultResolution: "720p",
+    supportedResolutions: ["720p"],
+    aliases: ["seedance-2.0-fast-vip"],
+    benefits: { "720p": "seedance_20_fast_720p_output" },
+    defaultBenefit: "seedance_20_fast_720p_output",
+    supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
+    source: "static",
+  },
+  {
+    id: "jimeng-video-seedance-2.0-vip",
+    type: "video",
+    name: "Seedance 2.0 VIP Vision",
+    description: "Jimeng Seedance 2.0 VIP Vision video generation model",
     modelReqKey: "dreamina_seedance_40_pro_vision",
     defaultResolution: "720p",
     supportedResolutions: ["720p", "1080p", "4k"],
+    aliases: ["seedance-2.0-vip"],
     benefits: {
       "720p": "seedance_20_pro_720p_output",
       "1080p": "seedance_20_pro_1080p_output",
@@ -216,6 +260,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     },
     defaultBenefit: "seedance_20_pro_720p_output",
     supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: SEEDANCE_2_DURATIONS,
     source: "static",
   },
   {
@@ -312,6 +358,7 @@ const dynamicCache = new Map<
 function cloneModelConfig(model: JimengModelConfig): JimengModelConfig {
   return {
     ...model,
+    aliases: model.aliases ? [...model.aliases] : undefined,
     supportedResolutions: [...model.supportedResolutions],
     benefits: model.benefits ? { ...model.benefits } : undefined,
     benefitCountByResolution: model.benefitCountByResolution
@@ -329,7 +376,10 @@ export function getStaticModelConfigs(type?: JimengModelType) {
 
 function getStaticModelConfig(modelIdOrReqKey: string, type?: JimengModelType) {
   return getStaticModelConfigs(type).find(
-    (model) => model.id === modelIdOrReqKey || model.modelReqKey === modelIdOrReqKey
+    (model) =>
+      model.id === modelIdOrReqKey ||
+      model.modelReqKey === modelIdOrReqKey ||
+      model.aliases?.includes(modelIdOrReqKey)
   );
 }
 
@@ -723,13 +773,16 @@ export async function resolveModelConfig(
 ) {
   const models = await listModelConfigs(refreshToken, { type });
   const matched = models.find(
-      (model) => model.id === modelIdOrReqKey || model.modelReqKey === modelIdOrReqKey
+      (model) =>
+        model.id === modelIdOrReqKey ||
+        model.modelReqKey === modelIdOrReqKey ||
+        model.aliases?.includes(modelIdOrReqKey)
   );
   if (matched) return matched;
   const staticMatch = getStaticModelConfig(modelIdOrReqKey, type);
   if (staticMatch) return staticMatch;
   return getStaticModelConfig(
-    type === "image" ? "jimeng-image-5.0-lite" : "jimeng-video-seedance-2.0-mini",
+    type === "image" ? "jimeng-image-5.0-lite" : "jimeng-video-seedance-2.0",
     type
   )!;
 }

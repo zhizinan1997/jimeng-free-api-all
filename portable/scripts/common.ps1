@@ -48,6 +48,9 @@ function Read-PortableConfig([string]$Path) {
     PORT = $port
     HOST = [string]($values['HOST'])
     AUTO_OPEN_BROWSER = $autoOpen
+    # Optional secrets are forwarded by start.ps1 without being printed.
+    JIMENG_ACCOUNT_POOL_KEY = [string]($values['JIMENG_ACCOUNT_POOL_KEY'])
+    ACCOUNT_POOL_ENCRYPTION_KEY = [string]($values['ACCOUNT_POOL_ENCRYPTION_KEY'])
   }
 }
 

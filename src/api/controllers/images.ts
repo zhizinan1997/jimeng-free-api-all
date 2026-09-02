@@ -184,39 +184,46 @@ export async function generateImages(
     resolution = "2k",
     sampleStrength = 0.5,
     negativePrompt = "",
-    filePath = "",
+    filePath,
+    filePaths = [],
     n = 1,
   }: {
     ratio?: string;
     resolution?: string;
     sampleStrength?: number;
     negativePrompt?: string;
-    filePath?: string; // 参考图路径，支持本地/网络
+    filePath?: string; // 向后兼容的单张参考图路径
+    filePaths?: string[]; // 参考图路径，支持本地/网络/base64
     n?: number; // 生成张数 (1-8)
   },
   refreshToken: string
 ) {
-  // 检查是否有参考图
-  const hasFilePath = !!filePath;
-  let uploadID: string | null = null;
+  const referenceImagePaths = [...new Set(
+    [filePath, ...filePaths].filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0
+    )
+  )];
+  const hasReferenceImages = referenceImagePaths.length > 0;
+  const uploadIDs: string[] = [];
 
-  // 如果有参考图，先上传
-  if (hasFilePath) {
-    // 只显示类型信息，不显示完整的base64内容
-    const fileDesc = filePath.startsWith("data:")
-      ? `base64图片(${filePath.length}字符)`
-      : filePath.substring(0, 80);
-    logger.info(`🖼️ [参考图] 检测到参考图: ${fileDesc} → 混合模式`);
-    try {
-      const uploadResult = await uploadFile(refreshToken, filePath);
-      uploadID = uploadResult.image_uri;
-      logger.info(`✅ [参考图] 上传成功 | URI: ${uploadID}`);
-    } catch (error) {
-      logger.error(`❌ [参考图] 上传失败: ${error.message}`);
-      throw new APIException(
-        EX.API_REQUEST_FAILED,
-        `参考图上传失败: ${error.message}`
-      );
+  // 如果有参考图，逐张上传并保留顺序，供上游的多图参考字段使用。
+  if (hasReferenceImages) {
+    logger.info(`🖼️ [参考图] 检测到 ${referenceImagePaths.length} 张参考图 → 混合模式`);
+    for (const [index, referenceImagePath] of referenceImagePaths.entries()) {
+      const fileDesc = referenceImagePath.startsWith("data:")
+        ? `base64图片(${referenceImagePath.length}字符)`
+        : referenceImagePath.substring(0, 80);
+      try {
+        const uploadResult = await uploadFile(refreshToken, referenceImagePath);
+        uploadIDs.push(uploadResult.image_uri);
+        logger.info(`✅ [参考图] 第 ${index + 1} 张上传成功: ${fileDesc}`);
+      } catch (error) {
+        logger.error(`❌ [参考图] 第 ${index + 1} 张上传失败: ${error.message}`);
+        throw new APIException(
+          EX.API_REQUEST_FAILED,
+          `第 ${index + 1} 张参考图上传失败: ${error.message}`
+        );
+      }
     }
   }
 
@@ -279,7 +286,7 @@ export async function generateImages(
   logger.info(`   🔗 映射: ${model}`);
   logger.info(`   📏 尺寸: ${finalWidth}x${finalHeight} (${validRatio})`);
   logger.info(`   🔍 分辨率: ${resolutionType.toUpperCase()} | 精细度: ${sampleStrength}`);
-  logger.info(`   🎯 模式: ${hasFilePath ? "混合(参考图)" : "文生图"}`);
+  logger.info(`   🎯 模式: ${hasReferenceImages ? `混合(${uploadIDs.length} 张参考图)` : "文生图"}`);
   logger.info(`═══════════════════════════════════════════════════════════\n`);
 
   const { totalCredit } = await getCredit(refreshToken);
@@ -290,7 +297,7 @@ export async function generateImages(
   // 构建 abilities 对象
   let abilities: Record<string, any>;
 
-  if (hasFilePath && uploadID) {
+  if (uploadIDs.length > 0) {
     // 混合模式 abilities
     abilities = {
       type: "",
@@ -319,9 +326,8 @@ export async function generateImages(
             type: "",
             id: util.uuid(),
             name: "byte_edit",
-            image_uri_list: [uploadID],
-            image_list: [
-              {
+            image_uri_list: uploadIDs,
+            image_list: uploadIDs.map((uploadID) => ({
                 type: "image",
                 id: util.uuid(),
                 source_from: "upload",
@@ -332,8 +338,7 @@ export async function generateImages(
                 height: 0,
                 format: "",
                 uri: uploadID,
-              },
-            ],
+            })),
             strength: 0.5,
           },
         ],
@@ -396,7 +401,7 @@ export async function generateImages(
       root_model: model,
     },
     submit_id: submitId,
-    metrics_extra: hasFilePath
+    metrics_extra: hasReferenceImages
       ? undefined
       : JSON.stringify({
           promptSource: "custom",
@@ -450,7 +455,7 @@ export async function generateImages(
             created_time_in_ms: String(Date.now()),
             created_did: "",
           },
-          generate_type: hasFilePath ? "blend" : "generate",
+          generate_type: hasReferenceImages ? "blend" : "generate",
           aigc_mode: "workbench",
           abilities,
           gen_option: {
@@ -653,6 +658,7 @@ export async function generateImagesWithRetry(
     sampleStrength?: number;
     negativePrompt?: string;
     filePath?: string;
+    filePaths?: string[];
     n?: number;
   },
   refreshToken: string

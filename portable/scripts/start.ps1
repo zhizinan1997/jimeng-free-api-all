@@ -52,6 +52,12 @@ try {
   $env:SERVER_PORT = [string]$config.PORT
   $env:SERVER_HOST = $config.HOST
   $env:DB_PATH = Join-Path $root 'data\jimeng.db'
+  if (-not [string]::IsNullOrWhiteSpace($config.JIMENG_ACCOUNT_POOL_KEY)) {
+    $env:JIMENG_ACCOUNT_POOL_KEY = $config.JIMENG_ACCOUNT_POOL_KEY
+  }
+  if (-not [string]::IsNullOrWhiteSpace($config.ACCOUNT_POOL_ENCRYPTION_KEY)) {
+    $env:ACCOUNT_POOL_ENCRYPTION_KEY = $config.ACCOUNT_POOL_ENCRYPTION_KEY
+  }
 
   $process = Start-Process `
     -FilePath $node `
