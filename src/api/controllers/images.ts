@@ -290,6 +290,7 @@ export async function generateImages(
   logger.info(`   📏 尺寸: ${finalWidth}x${finalHeight} (${validRatio})`);
   logger.info(`   🔍 分辨率: ${resolutionType.toUpperCase()} | 精细度: ${sampleStrength}`);
   logger.info(`   🎯 模式: ${hasReferenceImages ? `混合(${uploadIDs.length} 张参考图)` : "文生图"}`);
+  logger.info(`   🖼️ 请求张数: ${n}`);
   logger.info(`═══════════════════════════════════════════════════════════\n`);
 
   const { totalCredit } = await getCredit(refreshToken);
@@ -642,6 +643,9 @@ export async function generateImages(
   if (status === FAIL_STATE) {
     if (failCode === "2038") throw new APIException(EX.API_CONTENT_FILTERED);
     else throw new APIException(EX.API_IMAGE_GENERATION_FAILED);
+  }
+  if (item_list.length > n) {
+    logger.warn(`⚠️ [生成张数] 请求 ${n} 张，上游实际返回 ${item_list.length} 张，请检查即梦积分消耗及请求数据`);
   }
   return item_list.map((item) => {
     if (!item?.image?.large_images?.[0]?.image_url)
