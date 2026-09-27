@@ -75,6 +75,13 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now', 'localtime'))
   );
 
+  -- 运行设置表（控制台可修改的服务策略）
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+  );
+
   -- 创建索引
   CREATE INDEX IF NOT EXISTS idx_key_stats_key ON key_stats(key_hash);
   CREATE INDEX IF NOT EXISTS idx_api_keys_enabled ON api_keys(enabled);
@@ -341,6 +348,29 @@ export function clearLogs(): void {
   db.prepare('DELETE FROM logs').run();
 }
 
+/**
+ * 读取运行设置
+ *
+ * @param key 设置项
+ */
+export function getSetting(key: string): string | null {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+  return row ? row.value : null;
+}
+
+/**
+ * 写入运行设置
+ *
+ * @param key 设置项
+ * @param value 设置值
+ */
+export function setSetting(key: string, value: string): void {
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(key, value);
+}
+
 export default {
   isSetupComplete,
   createUser,
@@ -360,5 +390,7 @@ export default {
   getMedia,
   addLog,
   getLogs,
-  clearLogs
+  clearLogs,
+  getSetting,
+  setSetting
 };

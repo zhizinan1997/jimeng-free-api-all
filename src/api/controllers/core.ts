@@ -9,6 +9,7 @@ import EX from "@/api/consts/exceptions.ts";
 import { createParser } from "eventsource-parser";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
+import browserTransport from "@/lib/browser-transport.ts";
 
 // 模型名称
 const MODEL_NAME = "jimeng";
@@ -130,6 +131,42 @@ export async function receiveCredit(refreshToken: string) {
 }
 
 /**
+ * 将cookie字符串拆分为键值对
+ *
+ * @param cookie cookie字符串
+ */
+export function parseCookiePairs(cookie: string): Array<[string, string]> {
+  return cookie
+    .split("; ")
+    .filter(Boolean)
+    .map((item) => {
+      const index = item.indexOf("=");
+      if (index < 0) return [item, ""] as [string, string];
+      return [item.slice(0, index), item.slice(index + 1)] as [string, string];
+    });
+}
+
+/**
+ * 生成风控缓存键
+ *
+ * 风控按模型链路判定，而图片与视频共用 /mweb/v1/aigc_draft/generate 这一个路径，
+ * 因此缓存键必须带上请求体里的 root_model，避免视频触发的风控把图片请求也带进浏览器。
+ *
+ * @param uri 请求路径
+ * @param data 请求体
+ */
+export function getRiskControlKey(uri: string, data: any) {
+  let rootModel = "";
+  try {
+    const payload = typeof data === "string" ? JSON.parse(data) : data;
+    rootModel = payload?.extend?.root_model || "";
+  } catch {
+    // 请求体解析失败时退化为按路径缓存
+  }
+  return rootModel ? `${uri}#${rootModel}` : uri;
+}
+
+/**
  * 请求jimeng
  *
  * @param method 请求方法
@@ -171,6 +208,11 @@ export async function request(
   logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
   logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
 
+  // 浏览器传输：流式响应（对话类接口）保持直连，其余接口按配置决定是否走浏览器
+  const canUseBrowser = browserTransport.enabled && options.responseType != "stream";
+  const riskControlKey = getRiskControlKey(uri, options.data);
+  const useBrowser = canUseBrowser && browserTransport.shouldUse(riskControlKey);
+
   // 添加重试逻辑
   let retries = 0;
   const maxRetries = 3; // 最大重试次数
@@ -184,15 +226,24 @@ export async function request(
         await new Promise(resolve => setTimeout(resolve, 1000 * retries));
       }
 
-      const response = await axios.request({
-        method,
-        url: fullUrl,
-        params: requestParams,
-        headers: headers,
-        timeout: 45000, // 增加超时时间到45秒
-        validateStatus: () => true, // 允许任何状态码
-        ..._.omit(options, "params", "headers"),
-      });
+      const response = useBrowser
+        ? await browserTransport.request({
+            method,
+            url: fullUrl,
+            params: requestParams,
+            headers,
+            data: options.data,
+            cookiePairs: parseCookiePairs(generateCookie(token)),
+          })
+        : await axios.request({
+            method,
+            url: fullUrl,
+            params: requestParams,
+            headers: headers,
+            timeout: 45000, // 增加超时时间到45秒
+            validateStatus: () => true, // 允许任何状态码
+            ..._.omit(options, "params", "headers"),
+          });
 
       // 记录响应状态和头信息
       logger.info(`响应状态: ${response.status} ${response.statusText}`);
@@ -214,7 +265,40 @@ export async function request(
         }
       }
 
-      return checkResult(response);
+      try {
+        return checkResult(response);
+      } catch (error) {
+        // 上游风控拒绝：该接口需要浏览器端签名，改用浏览器传输重试一次
+        const riskControl =
+          error instanceof APIException && error.compare(EX.API_RISK_CONTROL_REJECTED);
+        if (!riskControl || !canUseBrowser || useBrowser || browserTransport.mode != "auto")
+          throw error;
+        logger.warn(
+          `模型链路 ${riskControlKey} 被上游风控拦截，改用浏览器传输重试；也可设置 JIMENG_BROWSER_TRANSPORT=always 直接走浏览器`
+        );
+        try {
+          const browserResponse = await browserTransport.request({
+            method,
+            url: fullUrl,
+            params: requestParams,
+            headers,
+            data: options.data,
+            cookiePairs: parseCookiePairs(generateCookie(token)),
+          });
+          logger.info(`响应状态: ${browserResponse.status} ${browserResponse.statusText}`);
+          const browserSummary = JSON.stringify(browserResponse.data).substring(0, 500) +
+            (JSON.stringify(browserResponse.data).length > 500 ? "..." : "");
+          logger.info(`响应数据摘要: ${browserSummary}`);
+          // 传输确实可用才记住该模型链路，避免把不可用的浏览器传输固化下来
+          browserTransport.markRequired(riskControlKey);
+          return checkResult(browserResponse);
+        } catch (browserError) {
+          // 浏览器传输抛出业务错误时透传；基础设施错误（缺依赖、浏览器启动失败等）保留原始风控错误
+          if (browserError instanceof APIException) throw browserError;
+          logger.error(`浏览器传输不可用，保留原始风控错误: ${browserError.message}`);
+          throw error;
+        }
+      }
     }
     catch (error) {
       lastError = error;
@@ -557,6 +641,17 @@ export function checkResult(result: AxiosResponse) {
   // 即梦积分不足错误码：5000 (旧) 或 1006 (新)
   if (ret === '5000' || ret === '1006')
     throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[积分不足]: ${errmsg} (错误码: ${ret})`);
+
+  // 上游风控拦截：Seedance 2.0 pro/fast 等链路要求携带浏览器端 SDK 生成的 a_bogus/msToken 签名
+  if (ret === '4013' || ret === '1019')
+    throw new APIException(EX.API_RISK_CONTROL_REJECTED, `[风控拦截]: ${errmsg} (错误码: ${ret})`).setData({
+      ret,
+      errmsg,
+      fail_code: result.data?.fail_code,
+      fail_starling_key: result.data?.fail_starling_key,
+      logid: result.data?.logid,
+    });
+
   throw new APIException(EX.API_REQUEST_FAILED, `[请求失败]: ${errmsg} (错误码: ${ret})`);
 }
 

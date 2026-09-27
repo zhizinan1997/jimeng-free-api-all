@@ -43,6 +43,17 @@ ENV DB_PATH=/app/data/jimeng.db
 # 账号池凭据加密密钥（务必设置并保持稳定，更换后无法解密旧账号）
 # ENV JIMENG_ACCOUNT_POOL_KEY=replace-with-a-long-random-secret
 
+# 浏览器传输层：上游风控拦截时改用浏览器页面签名（见 README「上游风控与浏览器传输」）。
+# 默认预装 Chromium（约 805MB 镜像层）并配好路径，服务默认即按 auto 模式工作，无需额外配置；
+# 不需要该能力时用 --build-arg INSTALL_BROWSER=false 构建精简镜像，并设置 JIMENG_BROWSER_TRANSPORT=off。
+# 工作模式也可在控制台「系统设置」页切换，该设置优先于环境变量。
+ARG INSTALL_BROWSER=true
+RUN if [ "$INSTALL_BROWSER" = "true" ]; then \
+        apk add --no-cache chromium nss freetype harfbuzz ca-certificates ttf-freefont; \
+    fi
+ENV JIMENG_BROWSER_EXECUTABLE=/usr/bin/chromium-browser
+ENV JIMENG_BROWSER_ARGS=--no-sandbox,--disable-dev-shm-usage
+
 # 持久化数据卷
 VOLUME ["/app/data"]
 

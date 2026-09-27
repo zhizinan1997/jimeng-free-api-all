@@ -15,6 +15,13 @@
 
 ## 更新日志
 
+### 2026-09-27（v1.2.8）
+
+- **新增浏览器传输层，默认开启（`auto`）**：Seedance 2.0 / 2.0 Fast（上游 `dreamina_seedance_40_pro` / `dreamina_seedance_40`）被上游风控中间件拦截（`ret=4013`，不消耗积分）时，服务会自动改用真实浏览器里的即梦页面完成签名后重试，对调用方无感知；其他模型与接口不受影响。实测同一账号同一请求：纯服务端返回 `4013`，经浏览器传输后风控放行。详见「上游风控与浏览器传输」章节。
+- **控制台新增「系统设置」页**：可直接切换浏览器传输的工作模式（关闭 / 自动 / 全量），并显示依赖状态、浏览器运行状态与已记住的模型链路；保存后立即生效并在重启后保留，设置优先于环境变量。
+- **风控错误码单独识别**：上游 `4013` / `1019` 不再被包装成笼统的「请求失败」，而是返回 `-2010 请求被上游风控拦截`；未安装 `playwright-core` 或浏览器启动失败时保留该原始错误，不会抛出依赖报错。
+- **Docker 镜像预装 Chromium**：镜像内已配好浏览器路径与 `--no-sandbox` 参数，部署后即按默认的 `auto` 模式工作，无需额外配置；镜像因此增加约 805MB，可用 `--build-arg INSTALL_BROWSER=false` 构建精简版（精简版请配 `JIMENG_BROWSER_TRANSPORT=off`）。
+
 ### 2026-09-25（v1.2.7）
 
 - **修复生成张数与积分消耗不一致**：将 `n` 对应的 `gen_count` 放在即梦请求的 `abilities.gen_option` 中，文生图和参考图混合模式均适用，避免上游忽略张数并默认生成 4 张。
@@ -112,6 +119,7 @@
 | **📝 实时日志** | 实时查看系统运行日志，支持按 `INFO` / `WARN` / `ERROR` 级别筛选，支持自动刷新和一键清理/导出日志文件。    |
 | **🖼️ 媒体回溯** | 所有生成的图片和视频都会自动记录在媒体库中，支持按类型（图片/视频）筛选，点击即可预览高清原图或播放视频。 |
 | **💳 积分追踪** | **[NEW]** 每次请求自动计算并记录消耗积分，实时更新 Token 的剩余积分，精准掌握额度使用情况。               |
+| **⚙️ 系统设置** | **[NEW]** 在控制台切换浏览器传输的工作模式（关闭 / 自动 / 全量），用于应对上游风控拦截，保存后立即生效并在重启后保留。 |
 
 ### 🚀 访问地址
 
@@ -162,7 +170,7 @@ docker run -it -d --init --name jimeng-free-api \
 - `-v jimeng-data:/app/data`：**强烈建议挂载**，用于持久化保存统计数据、媒体记录和管理员密码。
 - `-e TZ=Asia/Shanghai`：设置时区，确保日志和统计时间准确。
 
-已有部署更新时，先执行 `docker pull ghcr.io/zhizinan1997/jimeng-free-api-all:latest`，再用原有端口、数据卷及账号池加密密钥重新创建容器；仅重启旧容器不会更新代码。启动日志应显示 `Version: 1.2.7`。
+已有部署更新时，先执行 `docker pull ghcr.io/zhizinan1997/jimeng-free-api-all:latest`，再用原有端口、数据卷及账号池加密密钥重新创建容器；仅重启旧容器不会更新代码。启动日志应显示 `Version: 1.2.8`。
 
 ---
 
@@ -305,6 +313,86 @@ Authorization: Bearer sessionid_1,sessionid_2,sessionid_3
 返回所有可用模型及其配置信息。
 
 默认返回内置兜底模型列表；如果请求带有即梦 `Authorization`，服务会实时拉取官网图片/视频模型配置并缓存结果。可使用 `?refresh=true` 强制刷新缓存，使用 `?type=image` 或 `?type=video` 只返回指定类型模型。
+
+---
+
+## 🛡️ 上游风控与浏览器传输
+
+即梦对部分视频链路启用了风控中间件（starling），要求请求携带浏览器端 SDK 生成的 `msToken` 与 `a_bogus` 签名。**实测**：Seedance 2.0 与 2.0 Fast（上游 `dreamina_seedance_40_pro` / `dreamina_seedance_40`）在纯服务端请求下会返回 `HTTP 200 + ret=4013`（`fail_starling_key=web_risk_control_message_reject_generation`，提示「生成失败，疑似存在异常行为」），且**不消耗积分**；同一账号同一时刻下 `-mini`、1.5、3.0 系列不受影响，说明这不是账号或参数问题，而是这两条链路专属的签名校验。
+
+本服务的**浏览器传输层**会把这类请求交给真实浏览器里打开的即梦页面执行，由页面自身的 SDK 完成签名，并自动带上浏览器环境下的设备 cookie。签名算法无需自行实现，上游更新页面脚本时也能自动跟随。
+
+### 工作模式
+
+默认 `auto`：请求先按原有方式直连，只有被上游风控拦截（`ret=4013`）时才自动改用浏览器重试一次，并把该模型链路记入内存缓存，后续请求直接走浏览器；其他模型与接口完全不受影响。
+
+| 模式 | 行为 |
+| :--- | :--- |
+| `off` | 关闭，完全走服务端请求 |
+| `auto` | 默认。仅在被风控拦截时改用浏览器，成功后记住该链路 |
+| `always` | 所有即梦请求都经浏览器发送，兼容性最好、延迟略高 |
+
+### 开启方式
+
+`auto` 是默认值，**无需任何配置**；本机安装 Chrome 或 Edge 即可。可选依赖不随主依赖强制安装：
+
+```bash
+npm i playwright-core
+```
+
+也可以在控制台「系统设置」页直接切换模式（保存后立即生效、重启后保留），该设置优先于环境变量：
+
+```bash
+# 关闭浏览器传输
+JIMENG_BROWSER_TRANSPORT=off npm start
+
+# 所有即梦接口都走浏览器
+JIMENG_BROWSER_TRANSPORT=always npm start
+```
+
+控制台设置 > 环境变量 > 默认值。若未安装 `playwright-core` 或本机没有浏览器，被风控拦截时只会记录日志并保留原始的风控错误，不会影响其他请求。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `JIMENG_BROWSER_TRANSPORT` | `auto` | `off` 关闭，`auto` 风控拦截时启用，`always` 全部走浏览器（控制台设置优先于此变量） |
+| `JIMENG_BROWSER_HEADLESS` | `true` | 设为 `false` 可看到浏览器窗口，便于排查 |
+| `JIMENG_BROWSER_CHANNEL` | 自动 | `chrome` / `msedge` 等，默认先试 Chrome 再回退 Edge |
+| `JIMENG_BROWSER_EXECUTABLE` | 无 | 直接指定浏览器可执行文件路径（Docker 内常用） |
+| `JIMENG_BROWSER_ARGS` | 无 | 追加启动参数，逗号分隔，例如 `--no-sandbox,--disable-dev-shm-usage` |
+| `JIMENG_BROWSER_PAGE_URL` | 即梦视频生成页 | 用于装载签名的页面地址 |
+| `JIMENG_BROWSER_IDLE_TIMEOUT` | `300000` | 空闲多少毫秒后关闭浏览器 |
+| `JIMENG_BROWSER_REQUEST_TIMEOUT` | `60000` | 单次请求超时（毫秒） |
+| `JIMENG_BROWSER_NAVIGATION_TIMEOUT` | `90000` | 页面加载超时（毫秒） |
+| `JIMENG_BROWSER_USER_AGENT` | 内置 Chrome UA | 可覆盖浏览器 UA |
+
+### Docker 部署
+
+官方镜像已预装 Chromium 并配好路径与启动参数，**部署后即按默认的 `auto` 模式工作，无需任何额外配置**：
+
+```bash
+docker run -it -d --init --name jimeng-free-api \
+  -p 8001:8000 \
+  -v jimeng-data:/app/data \
+  -e TZ=Asia/Shanghai \
+  ghcr.io/zhizinan1997/jimeng-free-api-all:latest
+```
+
+预装 Chromium 会让镜像增加约 805MB。不需要该能力时可自行构建精简镜像（此时请一并用环境变量关闭浏览器传输，避免多余的启动尝试）：
+
+```bash
+docker build --build-arg INSTALL_BROWSER=false -t jimeng-free-api:lean .
+docker run -it -d -p 8001:8000 -e JIMENG_BROWSER_TRANSPORT=off jimeng-free-api:lean
+```
+
+### 注意事项
+
+- 该模式让请求以浏览器身份发出，属于绕过上游风控，可能违反即梦服务条款，账号存在被限制的风险，请自行评估后使用。
+- 浏览器传输只解决「风控拦截」，不解决「积分不足」：这两条链路本身要消耗积分，余额不足时上游返回 `1006`（服务返回 `-2009`），需账号自行充值。
+- 浏览器按需启动、空闲自动关闭；首次启用约需十几秒装载页面，之后单次请求约 1 秒内。
+- `auto` 模式下，被风控拦截的**模型链路**会被记住（按「接口路径 + 上游模型」区分，图片模型不受视频触发的影响），后续请求直接走浏览器；该记录在进程内存中，重启后需重新预热一次。
+- 开启后 `ret=4013` 的模型链路会转为浏览器传输，若仍返回风控错误，请检查页面地址与登录状态是否正常。
 
 ---
 

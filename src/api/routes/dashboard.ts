@@ -2,6 +2,7 @@ import Request from '@/lib/request/Request.ts';
 import Response from '@/lib/response/Response.ts';
 import db from '@/lib/database.ts';
 import { getCredit } from '@/api/controllers/core.ts';
+import browserTransport from '@/lib/browser-transport.ts';
 
 function sessionUser(request: Request): number | null {
   const sessionId = request.headers.cookie?.match(/(?:^|;\s*)session=([^;]+)/)?.[1];
@@ -42,6 +43,10 @@ export default {
     '/keys': async (request: Request) => {
       const error = authError(request); if (error) return error;
       return db.listApiKeys();
+    },
+    '/settings': async (request: Request) => {
+      const error = authError(request); if (error) return error;
+      return { browserTransport: await browserTransport.getStatus() };
     }
   },
   post: {
@@ -86,6 +91,14 @@ export default {
       const apiKey = db.setApiKeyEnabled(id, request.body.enabled);
       if (!apiKey) return new Response({ error: 'Key不存在' }, { statusCode: 404 });
       return { success: true, apiKey };
+    },
+    '/settings/browser-transport': async (request: Request) => {
+      const error = authError(request); if (error) return error;
+      const mode = request.body?.mode;
+      if (!['off', 'auto', 'always'].includes(mode))
+        return new Response({ error: '模式参数无效' }, { statusCode: 400 });
+      await browserTransport.setMode(mode);
+      return { success: true, browserTransport: await browserTransport.getStatus() };
     }
   },
   delete: {

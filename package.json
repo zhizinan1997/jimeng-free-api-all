@@ -1,6 +1,6 @@
 {
   "name": "jimeng-free-api",
-  "version": "1.2.7",
+  "version": "1.2.8",
   "description": "🚀 免费的高级即梦(Jimeng) AI 接口服务，支持 4.x/3.x 图像模型和视频生成，OpenAI 兼容，内置可视化管理控制台。",
   "type": "module",
   "main": "dist/index.js",
@@ -13,9 +13,9 @@
     "dist/"
   ],
   "scripts": {
-    "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --publicDir public --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
+    "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --publicDir public --external playwright-core --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
-    "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --publicDir public"
+    "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --publicDir public --external playwright-core"
   },
   "author": "Vinlic",
   "license": "ISC",
@@ -50,5 +50,8 @@
     "@types/mime": "^3.0.4",
     "tsup": "^8.0.2",
     "typescript": "^5.3.3"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.63.0"
   }
 }
