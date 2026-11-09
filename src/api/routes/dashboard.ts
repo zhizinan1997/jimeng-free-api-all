@@ -1,6 +1,7 @@
 import Request from '@/lib/request/Request.ts';
 import Response from '@/lib/response/Response.ts';
 import db from '@/lib/database.ts';
+import { getUsage } from '@/lib/database.ts';
 import { getCredit } from '@/api/controllers/core.ts';
 import browserTransport from '@/lib/browser-transport.ts';
 
@@ -22,6 +23,14 @@ export default {
   prefix: '/dashboard',
   get: {
     '/status': async () => ({ setupComplete: db.isSetupComplete() }),
+    '/usage': async (request: Request) => {
+      const error = authError(request); if (error) return error;
+      const days = Number(request.query.days || 0);
+      const keyId = request.query.key_id ? Number(request.query.key_id) : undefined;
+      if (![0, 1, 7, 30].includes(days) || (keyId !== undefined && (!Number.isSafeInteger(keyId) || keyId <= 0)))
+        return new Response({ error: '统计筛选参数无效' }, { statusCode: 400 });
+      return getUsage(days, keyId);
+    },
     '/stats': async (request: Request) => {
       const error = authError(request); if (error) return error;
       return db.getStats();

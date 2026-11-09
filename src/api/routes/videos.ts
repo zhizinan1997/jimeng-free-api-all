@@ -1,3 +1,4 @@
+import { usage } from '../controllers/usage.ts';
 import _ from 'lodash';
 
 import Request from '@/lib/request/Request.ts';
@@ -71,6 +72,7 @@ export default {
                     },
                     token
                 );
+                usage.success(0, videoUrl ? 1 : 0);
                 markCredentialSuccess(credential);
             } catch (error) {
                 markCredentialFailure(credential);
@@ -79,7 +81,7 @@ export default {
 
             // 记录统计和媒体
             try {
-                db.recordCall(statsKey, model, 0);
+                if (!usage.tracked()) db.recordCall(statsKey, model, 0);
                 if (videoUrl) db.saveMedia('video', videoUrl, model, prompt, statsKey);
             } catch (e) {
                 // 忽略数据库错误

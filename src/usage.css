@@ -1,0 +1,10 @@
+@layer theme, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "../public/index.html";
+@plugin "daisyui" {
+  themes: false;
+  include: table;
+  prefix: "du-";
+  logs: false;
+}

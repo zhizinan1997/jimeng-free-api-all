@@ -3,6 +3,7 @@ import _ from "lodash";
 import { tokenSplit } from "@/api/controllers/core.ts";
 import accountPool from "@/lib/account-pool.ts";
 import db, { touchApiKey } from "@/lib/database.ts";
+import { usage } from './usage.ts';
 
 export interface ResolvedCredential {
   token: string;
@@ -24,6 +25,7 @@ export async function resolveAuthorization(authorization: string): Promise<Resol
   if (managedKey) {
     const selected = accountPool.select("round_robin");
     touchApiKey(managedKey);
+    await usage.attach(selected.sessionId);
     return {
       token: selected.sessionId,
       accountId: selected.account.id,

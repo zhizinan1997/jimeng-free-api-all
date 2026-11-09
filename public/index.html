@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#0b1020" />
     <title>即梦 API 管理控制台</title>
+    <link rel="stylesheet" href="/usage.css" />
     <style>
       :root {
         --bg: #080c18;
@@ -240,7 +241,26 @@
         </div>
       </section>
 
-      <section id="tab-stats" class="tab-content"><div class="section-heading"><div><h2>运行概览</h2><p>查看服务调用量与模型使用情况。</p></div><button class="btn btn-secondary" onclick="loadStats()">刷新数据</button></div><div class="stats-grid"><div class="stat-card"><div class="stat-label">总调用次数</div><div id="total-calls" class="stat-value accent">0</div></div><div class="stat-card"><div class="stat-label">消耗积分</div><div id="total-credits" class="stat-value">0</div></div><div class="stat-card"><div class="stat-label">启用中的密钥</div><div id="active-keys" class="stat-value green">0</div></div><div class="stat-card"><div class="stat-label">使用过的模型</div><div id="models-used" class="stat-value">0</div></div></div><div class="panel" style="margin-bottom:18px"><div class="panel-head"><h3>API 密钥调用统计</h3></div><div class="table-scroll"><table><thead><tr><th>密钥</th><th>调用次数</th><th>消耗积分</th><th>剩余积分</th><th>最近使用</th></tr></thead><tbody id="key-stats-table"></tbody></table></div></div><div class="panel"><div class="panel-head"><h3>模型使用统计</h3></div><div class="table-scroll"><table><thead><tr><th>模型</th><th>调用次数</th><th>消耗积分</th></tr></thead><tbody id="model-stats-table"></tbody></table></div></div></section>
+      <section id="tab-stats" class="tab-content">
+        <div class="section-heading"><div><h2>密钥用量统计</h2><p>按调用者的 API 密钥统计，图片、视频和 Chat 接口统一计数。</p></div><button class="btn btn-secondary" onclick="loadStats()">刷新数据</button></div>
+        <div class="logs-toolbar">
+          <label for="usage-days">时间范围</label><select id="usage-days" onchange="loadStats()"><option value="0">全部时间</option><option value="1">最近 24 小时</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select>
+          <label for="usage-key">API 密钥</label><select id="usage-key" onchange="loadStats()"><option value="">全部密钥</option></select>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card"><div class="stat-label">请求次数</div><div id="total-calls" class="stat-value accent">0</div></div>
+          <div class="stat-card"><div class="stat-label">成功 / 失败 / 中断</div><div id="usage-outcomes" class="stat-value">0 / 0 / 0</div></div>
+          <div class="stat-card"><div class="stat-label">生成图片 / 视频</div><div id="usage-outputs" class="stat-value green">0 / 0</div></div>
+          <div class="stat-card"><div class="stat-label">已知部分积分（估算）</div><div id="total-credits" class="stat-value">—</div></div>
+        </div>
+        <div class="panel" style="margin-bottom:18px">
+          <div class="panel-head"><h3>每个密钥的用量</h3><span id="usage-summary"></span></div>
+          <div class="notice">积分按账号调用前后余额差估算，不是官方账单；查询失败、余额增加或同账号并发时记为未知。未知不代表免费。仅记录本次升级后的有效密钥请求，历史统计无法追溯归属。</div>
+          <div class="table-scroll overflow-x-auto"><table class="du-table du-table-sm"><thead><tr><th>密钥名称 / 标识</th><th>请求</th><th>成功</th><th>失败 / 中断</th><th>进行中</th><th>图片 / 视频</th><th>估算积分</th><th>积分未知请求</th><th>最近请求</th></tr></thead><tbody id="key-stats-table"></tbody></table></div>
+        </div>
+        <div class="panel" style="margin-bottom:18px"><div class="panel-head"><h3>请求模型用量</h3></div><div class="table-scroll overflow-x-auto"><table class="du-table du-table-sm"><thead><tr><th>请求模型</th><th>请求</th><th>成功</th><th>失败 / 中断</th><th>图片 / 视频</th><th>估算积分</th></tr></thead><tbody id="model-stats-table"></tbody></table></div></div>
+        <div class="panel"><div class="panel-head"><h3>最近 100 条请求</h3></div><div class="table-scroll overflow-x-auto"><table class="du-table du-table-sm"><thead><tr><th>时间</th><th>密钥</th><th>接口 / 请求模型</th><th>状态</th><th>图片 / 视频</th><th>积分</th><th>耗时</th></tr></thead><tbody id="usage-requests-table"></tbody></table></div></div>
+      </section>
 
       <section id="tab-logs" class="tab-content"><div class="section-heading"><div><h2>实时日志</h2><p>按级别查看服务运行记录。</p></div><div class="logs-toolbar"><select id="log-level" onchange="loadLogs()"><option value="ALL">全部级别</option><option value="INFO">信息</option><option value="WARN">警告</option><option value="ERROR">错误</option></select><button class="btn btn-secondary" onclick="loadLogs()">刷新</button><button class="btn btn-danger" onclick="clearLogs()">清理日志</button><button class="btn btn-secondary" onclick="exportLogs()">导出日志</button></div></div><div class="log-container" id="log-container"><div class="loading">正在加载…</div></div></section>
 
@@ -297,7 +317,32 @@
       async function refreshAccount(id) { const res = await fetch(`/account-pool/${id}/refresh-status`, { method: "POST", credentials: "include" }); const data = await res.json(); if (!res.ok || isApiFailure(data)) showToast(apiError(data, "状态查询失败")); else showToast("账号状态已更新"); loadAccounts(); }
       async function deleteAccount(id) { if (!confirm("确定从账号池删除这个账号吗？")) return; const res = await fetch(`/account-pool/${id}`, { method: "DELETE", credentials: "include" }); if (res.ok) { loadAccounts(); showToast("账号已删除"); } }
 
-      async function loadStats() { try { const res = await fetch("/dashboard/stats", { credentials: "include" }); if (!res.ok) return; const data = await res.json(); $("total-calls").textContent = data.totals?.total_calls || 0; $("total-credits").textContent = data.totals?.total_credits || 0; $("active-keys").textContent = data.keyStats?.length || 0; $("models-used").textContent = data.modelStats?.length || 0; $("key-stats-table").innerHTML = data.keyStats?.map((k) => `<tr><td><code>${esc(k.key_preview)}</code></td><td>${esc(k.total_calls)}</td><td>${esc(k.total_credits)}</td><td>${esc(k.remaining_credits || 0)}</td><td>${dateText(k.last_used)}</td></tr>`).join("") || emptyRow(5); $("model-stats-table").innerHTML = data.modelStats?.map((m) => `<tr><td>${esc(m.model)}</td><td>${esc(m.total_calls)}</td><td>${esc(m.total_credits)}</td></tr>`).join("") || emptyRow(3); } catch (e) { console.error(e); } }
+      let usageSequence = 0;
+      const usageKeyOptions = new Map();
+      const usageStateText = { running: "进行中", success: "成功", failed: "失败", interrupted: "中断" };
+      const usageCreditText = (row) => row.estimated_credits == null ? (row.requests === 0 ? "—" : "未知") : `${Number(row.estimated_credits.toFixed(2))}${row.unknown_credits ? " + 未知" : ""}`;
+      async function loadStats() {
+        const seq = ++usageSequence;
+        try {
+          const days = $("usage-days").value, key = $("usage-key").value;
+          const res = await fetch(`/dashboard/usage?days=${encodeURIComponent(days)}${key ? "&key_id=" + encodeURIComponent(key) : ""}`, { credentials: "include" });
+          if (!res.ok) throw new Error("统计读取失败");
+          const data = await res.json();
+          if (seq !== usageSequence) return;
+          for (const row of data.keyStats) usageKeyOptions.set(String(row.api_key_id), `${row.name || "未命名密钥"} · ${row.key_preview}${row.deleted ? "（已撤销）" : ""}`);
+          $("usage-key").innerHTML = '<option value="">全部密钥</option>' + [...usageKeyOptions].map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join("");
+          $("usage-key").value = key;
+          const totals = data.totals || {};
+          $("total-calls").textContent = totals.requests || 0;
+          $("usage-outcomes").textContent = `${totals.succeeded || 0} / ${totals.failed || 0} / ${totals.interrupted || 0}`;
+          $("usage-outputs").textContent = `${totals.images || 0} / ${totals.videos || 0}`;
+          $("total-credits").textContent = usageCreditText(totals);
+          $("usage-summary").textContent = `进行中 ${totals.running || 0} · 积分未知 ${totals.unknown_credits || 0} · 已启用密钥 ${data.activeKeys}`;
+          $("key-stats-table").innerHTML = data.keyStats.map(k => `<tr><td><strong>${esc(k.name || "未命名密钥")}${k.deleted ? "（已撤销）" : k.enabled ? "" : "（已停用）"}</strong><br><code>${esc(k.key_preview)}</code></td><td>${k.requests}</td><td>${k.succeeded}</td><td>${k.failed} / ${k.interrupted}</td><td>${k.running}</td><td>${k.images} / ${k.videos}</td><td>${esc(usageCreditText(k))}</td><td>${k.unknown_credits}</td><td>${dateText(k.last_used)}</td></tr>`).join("") || emptyRow(9, "尚无 API 密钥，创建后即可分别记录用量");
+          $("model-stats-table").innerHTML = data.modelStats.map(m => `<tr><td>${esc(m.model)}</td><td>${m.requests}</td><td>${m.succeeded}</td><td>${m.failed} / ${m.interrupted}</td><td>${m.images} / ${m.videos}</td><td>${esc(usageCreditText(m))}</td></tr>`).join("") || emptyRow(6, "此范围内还没有请求");
+          $("usage-requests-table").innerHTML = data.recent.map(r => `<tr><td>${dateText(r.started_at)}</td><td>${esc(r.key_name || "未命名密钥")}<br><code>${esc(r.key_preview)}</code></td><td>${esc(r.endpoint)}<br>${esc(r.model)}</td><td>${esc(usageStateText[r.status] || r.status)}</td><td>${r.images} / ${r.videos}</td><td>${r.status === "running" ? "待结算" : r.credit_status === "concurrent" ? "并发，无法归属" : r.estimated_credits == null ? "未知" : esc(Number(r.estimated_credits.toFixed(2))) + "（估算）"}</td><td>${r.duration_ms == null ? "—" : (r.duration_ms / 1000).toFixed(1) + " 秒"}</td></tr>`).join("") || emptyRow(7, "此范围内还没有请求");
+        } catch (e) { if (seq === usageSequence) showToast("统计读取失败，请刷新重试"); }
+      }
       async function loadLogs() { try { const level = $("log-level").value, res = await fetch(`/dashboard/logs?level=${level}&limit=200`, { credentials: "include" }); if (!res.ok) return; const logs = await res.json(); $("log-container").innerHTML = logs.map((log) => `<div class="log-entry"><span class="log-time">${esc(log.created_at)}</span><span class="log-level ${esc(log.level)}">${esc(log.level)}</span><span class="log-message">${esc(log.message)}</span></div>`).join("") || `<div class="loading">暂无日志</div>`; } catch (e) { console.error(e); } }
       async function clearLogs() { if (!confirm("确定清理全部日志吗？")) return; await fetch("/dashboard/logs", { method: "DELETE", credentials: "include" }); loadLogs(); showToast("日志已清理"); }
       function exportLogs() { const blob = new Blob([$("log-container").innerText], { type: "text/plain" }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = `jimeng-logs-${new Date().toISOString().slice(0, 10)}.txt`; a.click(); URL.revokeObjectURL(url); }

@@ -9,6 +9,7 @@ import db from "@/lib/database.ts";
 import { generateImagesWithRetry, DEFAULT_MODEL } from "./images.ts";
 import { generateVideo, DEFAULT_MODEL as DEFAULT_VIDEO_MODEL } from "./videos.ts";
 import { getCredit } from "./core.ts";
+import { usage } from "./usage.ts";
 
 // 最大重试次数
 const MAX_RETRY_COUNT = 3;
@@ -166,7 +167,7 @@ export async function createCompletion(
         // 查询生成前的积分
         let creditsBefore = 0;
         try {
-          const beforeCredit = await getCredit(refreshToken);
+          const beforeCredit = usage.tracked() ? { totalCredit: 0 } : await getCredit(refreshToken);
           creditsBefore = beforeCredit.totalCredit;
         } catch (e) { /* 忽略积分查询错误 */ }
 
@@ -188,7 +189,7 @@ export async function createCompletion(
         let creditsUsed = 0;
         let remainingCredits = 0;
         try {
-          const afterCredit = await getCredit(refreshToken);
+          const afterCredit = usage.tracked() ? { totalCredit: 0 } : await getCredit(refreshToken);
           remainingCredits = afterCredit.totalCredit;
           creditsUsed = Math.max(0, creditsBefore - remainingCredits);
           logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
@@ -196,7 +197,8 @@ export async function createCompletion(
 
         // 记录统计和媒体
         try {
-          db.recordCall(refreshToken, _model, creditsUsed, remainingCredits);
+          usage.success(0, videoUrl ? 1 : 0);
+          if (!usage.tracked()) db.recordCall(refreshToken, _model, creditsUsed, remainingCredits);
           if (videoUrl) db.saveMedia('video', videoUrl, _model, promptText || lastMessage.content, refreshToken);
         } catch (e) { /* 忽略数据库错误 */ }
 
@@ -248,7 +250,7 @@ export async function createCompletion(
       // 查询生成前的积分
       let creditsBefore = 0;
       try {
-        const beforeCredit = await getCredit(refreshToken);
+        const beforeCredit = usage.tracked() ? { totalCredit: 0 } : await getCredit(refreshToken);
         creditsBefore = beforeCredit.totalCredit;
       } catch (e) { /* 忽略积分查询错误 */ }
 
@@ -267,7 +269,7 @@ export async function createCompletion(
       let creditsUsed = 0;
       let remainingCredits = 0;
       try {
-        const afterCredit = await getCredit(refreshToken);
+        const afterCredit = usage.tracked() ? { totalCredit: 0 } : await getCredit(refreshToken);
         remainingCredits = afterCredit.totalCredit;
         creditsUsed = Math.max(0, creditsBefore - remainingCredits);
         logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
@@ -275,7 +277,8 @@ export async function createCompletion(
 
       // 记录统计和媒体
       try {
-        db.recordCall(refreshToken, _model || model, creditsUsed, remainingCredits);
+        usage.success(generatedImageUrls.filter(Boolean).length, 0);
+        if (!usage.tracked()) db.recordCall(refreshToken, _model || model, creditsUsed, remainingCredits);
         generatedImageUrls.forEach(url => {
           if (url) db.saveMedia('image', url, _model || model, promptText || lastMessage.content, refreshToken);
         });
@@ -455,7 +458,8 @@ export async function createCompletionStream(
 
           // 记录统计和媒体
           try {
-            db.recordCall(refreshToken, _model, 0);
+            usage.success(0, videoUrl ? 1 : 0);
+            if (!usage.tracked()) db.recordCall(refreshToken, _model, 0);
             if (videoUrl) db.saveMedia('video', videoUrl, _model, promptText || lastMessage.content, refreshToken);
           } catch (e) { /* 忽略数据库错误 */ }
 
@@ -577,7 +581,8 @@ export async function createCompletionStream(
         .then((generatedUrls) => {
           // 记录统计和媒体
           try {
-            db.recordCall(refreshToken, _model || model, 0);
+            usage.success(generatedUrls.filter(Boolean).length, 0);
+            if (!usage.tracked()) db.recordCall(refreshToken, _model || model, 0);
             generatedUrls.forEach(url => {
               if (url) db.saveMedia('image', url, _model || model, promptText || lastMessage.content, refreshToken);
             });

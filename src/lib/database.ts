@@ -88,7 +88,87 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_media_created ON media(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
   CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS usage_requests (
+    id TEXT PRIMARY KEY,
+    api_key_id INTEGER NOT NULL,
+    key_name TEXT NOT NULL,
+    key_preview TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    images INTEGER NOT NULL DEFAULT 0,
+    videos INTEGER NOT NULL DEFAULT 0,
+    estimated_credits REAL,
+    credit_status TEXT NOT NULL DEFAULT 'unknown',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_usage_key_time ON usage_requests(api_key_id, started_at);
+  CREATE INDEX IF NOT EXISTS idx_usage_time ON usage_requests(started_at);
 `);
+
+// A process restart cannot recover the outcome of an in-flight upstream task.
+db.prepare("UPDATE usage_requests SET status = 'interrupted', finished_at = ? WHERE status = 'running'")
+  .run(new Date().toISOString());
+
+export function startUsage(id: string, keyId: number, endpoint: string, model: string) {
+  const key = db.prepare('SELECT name, key_preview FROM api_keys WHERE id = ?').get(keyId) as any;
+  if (!key) throw new Error('API key no longer exists');
+  db.prepare(`INSERT INTO usage_requests
+    (id, api_key_id, key_name, key_preview, endpoint, model, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, keyId, key.name, key.key_preview, endpoint, model.slice(0, 160), new Date().toISOString());
+}
+
+export function finishUsage(id: string, status: string, images: number, videos: number,
+  credits: number | null, creditStatus: string, duration: number) {
+  db.prepare(`UPDATE usage_requests SET status = ?, images = ?, videos = ?, estimated_credits = ?,
+    credit_status = ?, duration_ms = ?, finished_at = ? WHERE id = ? AND status = 'running'`)
+    .run(status, images, videos, credits, creditStatus, duration, new Date().toISOString(), id);
+}
+
+export function getUsage(days = 0, keyId?: number) {
+  const since = days ? new Date(Date.now() - days * 86400000).toISOString() : '1970-01-01';
+  const params: any[] = [since];
+  const where = `started_at >= ?${keyId ? ' AND api_key_id = ?' : ''}`;
+  if (keyId) params.push(keyId);
+  const aggregate = `COUNT(*) AS requests,
+    SUM(status = 'success') AS succeeded, SUM(status = 'failed') AS failed,
+    SUM(status = 'running') AS running, SUM(status = 'interrupted') AS interrupted,
+    SUM(images) AS images, SUM(videos) AS videos, SUM(estimated_credits) AS estimated_credits,
+    SUM(credit_status = 'estimated') AS estimated_requests,
+    SUM(status != 'running' AND estimated_credits IS NULL) AS unknown_credits,
+    MAX(started_at) AS last_used`;
+  const keyRows = db.prepare(`SELECT api_key_id, ${aggregate} FROM usage_requests WHERE ${where}
+    GROUP BY api_key_id ORDER BY requests DESC`).all(...params) as any[];
+  const keys = db.prepare('SELECT id, name, key_preview, enabled FROM api_keys ORDER BY id DESC').all() as any[];
+  const keyMap = new Map(keys.map(k => [k.id, k]));
+  const keyStats = keyRows.map(row => {
+    const key = keyMap.get(row.api_key_id);
+    const snapshot = key || db.prepare(`SELECT key_name AS name, key_preview FROM usage_requests
+      WHERE api_key_id = ? ORDER BY started_at DESC LIMIT 1`).get(row.api_key_id) as any;
+    return { ...row, name: snapshot.name, key_preview: snapshot.key_preview,
+      enabled: Boolean(key?.enabled), deleted: !key };
+  });
+  for (const key of keys) {
+    if ((!keyId || key.id === keyId) && !keyRows.some(r => r.api_key_id === key.id))
+      keyStats.push({ api_key_id: key.id, name: key.name, key_preview: key.key_preview,
+        enabled: Boolean(key.enabled), deleted: false, requests: 0, succeeded: 0, failed: 0,
+        running: 0, interrupted: 0, images: 0, videos: 0, estimated_credits: null,
+        estimated_requests: 0, unknown_credits: 0, last_used: null });
+  }
+  return {
+    keyStats,
+    totals: db.prepare(`SELECT ${aggregate} FROM usage_requests WHERE ${where}`).get(...params),
+    modelStats: db.prepare(`SELECT model, ${aggregate} FROM usage_requests WHERE ${where}
+      GROUP BY model ORDER BY requests DESC`).all(...params),
+    recent: db.prepare(`SELECT id, api_key_id, key_name, key_preview, endpoint, model, status,
+      images, videos, estimated_credits, credit_status, started_at, duration_ms
+      FROM usage_requests WHERE ${where} ORDER BY started_at DESC, rowid DESC LIMIT 100`).all(...params),
+    activeKeys: keys.filter(k => k.enabled).length,
+  };
+}
 
 // 兼容早期可能已经存在的 api_keys 表：新增列时不影响现有数据。
 const apiKeyColumns = db.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name: string }>;
