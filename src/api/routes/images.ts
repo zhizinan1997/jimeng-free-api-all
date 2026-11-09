@@ -1,3 +1,4 @@
+import { usage } from '../controllers/usage.ts';
 import _ from "lodash";
 
 import Request from "@/lib/request/Request.ts";
@@ -96,6 +97,7 @@ export default {
           filePaths,
           n,
         }, token);
+        usage.success(imageUrls.filter(Boolean).length, 0);
         markCredentialSuccess(credential);
       } catch (error) {
         markCredentialFailure(credential);
@@ -104,7 +106,7 @@ export default {
       
       // 记录统计和媒体
       try {
-        db.recordCall(statsKey, model, 0);
+        if (!usage.tracked()) db.recordCall(statsKey, model, 0);
         imageUrls.forEach(url => {
           if (url) db.saveMedia('image', url, model, prompt, statsKey);
         });

@@ -15,3 +15,6 @@ data/
 *.db-wal
 *.sqlite
 *.sqlite3
+
+.test-build/
+public/usage.css

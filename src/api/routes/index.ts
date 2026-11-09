@@ -10,10 +10,18 @@ import videos from './videos.ts';
 import dashboard from './dashboard.ts';
 import accountPool from './account-pool.ts';
 import accountStatus from './account-status.ts';
+import { usage } from '../controllers/usage.ts';
+import { DEFAULT_MODEL as IMAGE_MODEL } from '../controllers/images.ts';
+import { DEFAULT_MODEL as VIDEO_MODEL } from '../controllers/videos.ts';
+
+images.post['/generations'] = usage.wrap(images.post['/generations'], '/v1/images/generations', IMAGE_MODEL);
+videos.post['/generations'] = usage.wrap(videos.post['/generations'], '/v1/videos/generations', VIDEO_MODEL);
+chat.post['/completions'] = usage.wrap(chat.post['/completions'], '/v1/chat/completions', IMAGE_MODEL);
 
 export default [
     {
         get: {
+            '/usage.css': async () => new Response(await fs.readFile('public/usage.css'), { type: 'css' }),
             '/': async () => {
                 const content = await fs.readFile('public/index.html');
                 return new Response(content, {

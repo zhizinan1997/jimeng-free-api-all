@@ -1,7 +1,7 @@
 {
   "name": "jimeng-free-api",
   "version": "1.2.8",
-  "description": "🚀 免费的高级即梦(Jimeng) AI 接口服务，支持 4.x/3.x 图像模型和视频生成，OpenAI 兼容，内置可视化管理控制台。",
+  "description": "\ud83d\ude80 \u514d\u8d39\u7684\u9ad8\u7ea7\u5373\u68a6(Jimeng) AI \u63a5\u53e3\u670d\u52a1\uff0c\u652f\u6301 4.x/3.x \u56fe\u50cf\u6a21\u578b\u548c\u89c6\u9891\u751f\u6210\uff0cOpenAI \u517c\u5bb9\uff0c\u5185\u7f6e\u53ef\u89c6\u5316\u7ba1\u7406\u63a7\u5236\u53f0\u3002",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -13,9 +13,12 @@
     "dist/"
   ],
   "scripts": {
-    "dev": "tsup src/index.ts --format cjs,esm --sourcemap --dts --publicDir public --external playwright-core --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
+    "dev": "npm run build:css && tsup src/index.ts --format cjs,esm --sourcemap --dts --publicDir public --external playwright-core --watch --onSuccess \"node --enable-source-maps --no-node-snapshot dist/index.js\"",
     "start": "node --enable-source-maps --no-node-snapshot dist/index.js",
-    "build": "tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --publicDir public --external playwright-core"
+    "build": "npm run build:css && tsup src/index.ts --format cjs,esm --sourcemap --dts --clean --publicDir public --external playwright-core",
+    "build:css": "tailwindcss -i src/usage.css -o public/usage.css --minify",
+    "test:usage": "tsup tests/usage.test.ts --format esm --out-dir .test-build --external better-sqlite3 && node --test .test-build/usage.test.js",
+    "test:usage:http": "npm run build && python3 tests/usage-http.py"
   },
   "author": "Vinlic",
   "license": "ISC",
@@ -46,8 +49,12 @@
     "yaml": "^2.3.4"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.5",
+    "@types/koa": "^3.0.3",
     "@types/lodash": "^4.14.202",
     "@types/mime": "^3.0.4",
+    "daisyui": "^5.7.50",
+    "tailwindcss": "^4.3.5",
     "tsup": "^8.0.2",
     "typescript": "^5.3.3"
   },
