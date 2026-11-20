@@ -12,6 +12,7 @@ export interface ResponseOptions {
     body?: any;
     size?: number;
     time?: number;
+    flushHeaders?: boolean;
 }
 
 export default class Response {
@@ -31,8 +32,11 @@ export default class Response {
     /** 响应时间戳 */
     time: number;
 
+    /** Send streaming response headers before waiting for its final body. */
+    flushHeaders: boolean;
+
     constructor(body: any, options: ResponseOptions = {}) {
-        const { statusCode, type, headers, redirect, size, time } = options;
+        const { statusCode, type, headers, redirect, size, time, flushHeaders } = options;
         this.statusCode = Number(_.defaultTo(statusCode, Body.isInstance(body) ? body.statusCode : undefined))
         this.type = type;
         this.headers = headers;
@@ -40,6 +44,7 @@ export default class Response {
         this.size = size;
         this.time = Number(_.defaultTo(time, util.timestamp()));
         this.body = body;
+        this.flushHeaders = flushHeaders === true;
     }
 
     injectTo(ctx) {
@@ -54,6 +59,7 @@ export default class Response {
             ctx.body = this.body.toObject();
         else
             ctx.body = this.body;
+        if (this.flushHeaders) ctx.res.flushHeaders();
     }
 
     static isInstance(value) {

@@ -4,8 +4,11 @@ import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
 import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
+import { uploadVideoReference } from "./video-reference-upload.ts";
+import { videoHistoryRecord } from "./video-history.ts";
 import logger from "@/lib/logger.ts";
 import { JimengModelConfig, resolveVideoModelConfig } from "./models.ts";
+import { validateSeedance25Options } from "./seedance25-policy.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
 export const DEFAULT_MODEL = "jimeng-video-seedance-2.0";
@@ -56,6 +59,7 @@ const VIDEO_MODEL_CONFIG: Record<
     defaultBenefit: "",
     benefits: {},
     supportsLongDuration: true,
+    supportedDurations: Array.from({ length: 26 }, (_, i) => i + 5),
   },
   "jimeng-video-seedance-2.0-mini": {
     defaultResolution: "720p",
@@ -211,35 +215,6 @@ function normalizeVideoDuration(duration: number | undefined, modelConfig: Jimen
   return getDefaultVideoDuration(modelConfig);
 }
 
-function getVideoDurationFallbacks(modelConfig: JimengModelConfig, requestedDuration?: number) {
-  const initialDuration = normalizeVideoDuration(requestedDuration, modelConfig);
-  const defaultDuration = getDefaultVideoDuration(modelConfig);
-  const minimumDuration = Math.min(...getSupportedVideoDurations(modelConfig));
-  return [...new Set([initialDuration, defaultDuration, minimumDuration])].filter(
-    (duration) => duration <= initialDuration
-  );
-}
-
-function getVideoResolutionFallbacks(
-  model: string,
-  requestedResolution?: string,
-  modelConfig?: JimengModelConfig
-) {
-  const config = modelConfig || getVideoModelConfig(model);
-  const resolutionPriority = ["4k", "1080p", "720p", "480p"];
-  const supportedResolutions = resolutionPriority.filter((resolution) =>
-    config.supportedResolutions.includes(resolution)
-  );
-  const startResolution = supportedResolutions.includes(requestedResolution || "")
-    ? requestedResolution
-    : config.defaultResolution;
-  const startIndex = Math.max(
-    0,
-    supportedResolutions.indexOf(startResolution || config.defaultResolution)
-  );
-  return supportedResolutions.slice(startIndex);
-}
-
 const VIDEO_PROCESSING_STATES = [20, 42, 45];
 
 function extractVideoUrlFromItemList(itemList: any[] = []) {
@@ -249,22 +224,8 @@ function extractVideoUrlFromItemList(itemList: any[] = []) {
       item?.video?.play_url ||
       item?.video?.download_url ||
       item?.video?.url;
-    if (url) return url;
+    if (typeof url === "string" && url.trim()) return url.trim();
   }
-}
-
-function extractVideoUrlFromResponse(result: any) {
-  const historyRecords = [
-    ...(result?.history_list || []),
-    ...(result?.history_records || []),
-  ];
-  for (const record of historyRecords) {
-    const url = extractVideoUrlFromItemList(record?.item_list || []);
-    if (url) return url;
-  }
-
-  const responseStr = JSON.stringify(result);
-  return responseStr.match(/https:\/\/[^"\s]+(?:vlabvod|vod)[^"\s]+/)?.[0];
 }
 
 // 视频支持的比例列表
@@ -339,24 +300,29 @@ export async function generateVideo(
     resolution = "720p",
     duration,
     filePaths = [],
+    videoPaths = [],
+    audioPaths = [],
+    functionMode,
   }: {
     ratio?: string;
     resolution?: string;
     duration?: number;
     filePaths?: string[];
+    videoPaths?: string[];
+    audioPaths?: string[];
+    functionMode?: "omni_reference";
     width?: number;
     height?: number;
   },
-  refreshToken: string
+  refreshToken: string,
+  cookie?: string
 ) {
-  const modelConfig = await resolveVideoModelConfig(_model, refreshToken);
+  const modelConfig = await resolveVideoModelConfig(_model, refreshToken, cookie);
+  validateSeedance25Options(modelConfig, { duration, resolution, functionMode, filePaths, videoPaths, audioPaths });
   const model = modelConfig.modelReqKey || getModel(_model);
   let finalResolution = resolution;
   if (!modelConfig.supportedResolutions.includes(finalResolution)) {
-    logger.warn(
-      `视频模型 ${_model} 不支持分辨率 ${resolution}，已调整为 ${modelConfig.defaultResolution}`
-    );
-    finalResolution = modelConfig.defaultResolution;
+    throw new APIException(EX.API_REQUEST_PARAMS_INVALID, `模型不支持请求的分辨率 ${resolution}`);
   }
 
   // 比例逻辑：优先使用 ratio 参数，如果 ratio 是默认且 detecting logic kicks in, use detected.
@@ -404,9 +370,7 @@ export async function generateVideo(
   const requestedDuration = duration;
   let finalDuration = normalizeVideoDuration(requestedDuration, modelConfig);
   if (requestedDuration !== undefined && requestedDuration !== finalDuration) {
-    logger.warn(
-      `视频模型 ${_model} 不支持 ${requestedDuration} 秒，已调整为 ${finalDuration} 秒`
-    );
+    throw new APIException(EX.API_REQUEST_PARAMS_INVALID, `模型不支持请求的时长 ${requestedDuration} 秒`);
   } else if (requestedDuration === undefined && finalDuration === 10) {
     const detectedDuration = detectVideoDuration(prompt);
     if (detectedDuration !== null) {
@@ -428,7 +392,7 @@ export async function generateVideo(
   let first_frame_image = undefined;
   let end_frame_image = undefined;
 
-  if (filePaths && filePaths.length > 0) {
+  if (functionMode !== "omni_reference" && filePaths && filePaths.length > 0) {
     // 统计图片类型而不是显示完整内容
     const imageTypes = filePaths.map((p) =>
       p.startsWith("data:") ? "base64" : p.startsWith("http") ? "url" : "file"
@@ -443,19 +407,14 @@ export async function generateVideo(
     for (let i = 0; i < filePaths.length; i++) {
       // ... (Upload Logic similar to previous) ...
       const filePath = filePaths[i];
-      if (!filePath) continue;
       try {
-        const pathDesc = filePath.startsWith("data:")
-          ? `base64图片`
-          : filePath.substring(0, 80);
+        if (!filePath) throw new Error("参考图片路径为空");
         const uploadResult = await uploadFile(refreshToken, filePath, true);
-        if (uploadResult && uploadResult.image_uri) {
-          uploadIDs.push(uploadResult.image_uri);
-        }
+        if (!uploadResult?.image_uri) throw new Error("参考图片上传未返回图片标识");
+        uploadIDs.push(uploadResult.image_uri);
       } catch (e) {
-        logger.error(`上传失败: ${e.message}`);
-        if (i === 0)
-          throw new APIException(EX.API_REQUEST_FAILED, "首帧上传失败");
+        logger.error("上传失败");
+        throw new APIException(EX.API_REQUEST_FAILED, i === 0 ? "首帧上传失败" : "尾帧上传失败");
       }
     }
 
@@ -507,19 +466,126 @@ export async function generateVideo(
     `视频请求参考图${hasReferenceFrame ? "已写入首/尾帧字段" : "未写入首/尾帧字段"}`
   );
 
+  let omniRequestData: Record<string, unknown> | undefined;
+  if (functionMode === "omni_reference") {
+    const imageUris: string[] = [];
+    for (const path of filePaths) {
+      const uploaded = await uploadFile(refreshToken, path, true);
+      if (!uploaded?.image_uri) throw new APIException(EX.API_REQUEST_FAILED, "全能参考图片上传失败");
+      imageUris.push(uploaded.image_uri);
+    }
+    const materialList: any[] = imageUris.map((uri) => ({
+      type: "", id: util.uuid(), material_type: "image",
+      image_info: {
+        type: "image", id: util.uuid(), source_from: "upload", platform_type: 1,
+        name: "", image_uri: uri, uri, width: 0, height: 0, format: "",
+      },
+    }));
+    const materialTypes = imageUris.map(() => 1);
+    let totalVideoDurationMs = 0;
+    for (const path of videoPaths) {
+      const uploaded = await uploadVideoReference(path, refreshToken, "video", cookie);
+      totalVideoDurationMs += uploaded.durationMs;
+      if (totalVideoDurationMs > 15000) throw new APIException(EX.API_REQUEST_FAILED, "参考视频总时长不能超过 15 秒");
+      materialList.push({ type: "", id: util.uuid(), material_type: "video", video_info: {
+        type: "video", id: util.uuid(), source_from: "upload", name: "", vid: uploaded.vid,
+        fps: 0, width: uploaded.width, height: uploaded.height, duration: uploaded.durationMs,
+      } });
+      materialTypes.push(2);
+    }
+    for (const path of audioPaths) {
+      const uploaded = await uploadVideoReference(path, refreshToken, "audio", cookie);
+      materialList.push({ type: "", id: util.uuid(), material_type: "audio", audio_info: {
+        type: "audio", id: util.uuid(), source_from: "upload", name: "", vid: uploaded.vid,
+        duration: uploaded.durationMs,
+      } });
+      materialTypes.push(3);
+    }
+    const materialNames = { 1: "image", 2: "video", 3: "audio" } as const;
+    const isSeedance25 = model === "dreamina_seedance_45_pro";
+    const metaList = isSeedance25 ? [{ type: "", id: util.uuid(), meta_type: "text", text: prompt }] : materialTypes.flatMap((type, index) => [
+      { meta_type: materialNames[type as keyof typeof materialNames], text: "", material_ref: { material_idx: index } },
+      { meta_type: "text", text: index === materialTypes.length - 1 ? ` ${prompt}` : " " },
+    ]);
+    const omniMetrics = JSON.stringify({
+      enterFrom: "click", isDefaultSeed: 1, isRegenerate: false,
+      originSubmitId: util.uuid(), functionMode: "omni_reference",
+      ...(isSeedance25 ? { generatorFeature: "omniReference" } : {}),
+      sceneOptions: JSON.stringify([{
+        type: "video", scene: "BasicVideoGenerateButton", modelReqKey: model,
+        videoDuration: finalDuration, materialTypes,
+        ...(isSeedance25 ? { resolution: finalResolution, batchNumber: 1, inputVideoDuration: 0, chargeInputVideoDuration: true, isLongVideo: false, hasInputVideo: false, useSeedanceFast5sFreeTrial: false } : {}),
+      }]),
+    });
+    // Observed only for the confirmed 4-second Fast VIP web request.
+    const observedFastVip4s = model === "dreamina_seedance_40_vision" && finalDuration === 4 && finalResolution === "720p";
+    const omniCommerceInfo = isSeedance25 && finalResolution === "720p" && videoPaths.length === 0
+      ? { ...videoCommerceInfo, benefit_type: "seedance_25_720p_no_input_video_output", amount: finalDuration }
+      : observedFastVip4s
+      ? { ...videoCommerceInfo, benefit_type: "dreamina_seedance_20_fast_5s", amount: 4 }
+      : videoCommerceInfo;
+    const omniComponentId = util.uuid();
+    omniRequestData = {
+      extend: {
+        root_model: model,
+        m_video_commerce_info: omniCommerceInfo,
+        m_video_commerce_info_list: [omniCommerceInfo],
+      },
+      submit_id: util.uuid(),
+      metrics_extra: omniMetrics,
+      draft_content: JSON.stringify({
+        type: "draft", id: util.uuid(), min_version: isSeedance25 ? "3.3.9" : DRAFT_VERSION,
+        min_features: isSeedance25 ? ["AIGC_Video_UnifiedEdit", "AIGC_Video_Seedance25ResultAction"] : ["AIGC_Video_UnifiedEdit"], is_from_tsn: true,
+        version: DRAFT_VERSION, main_component_id: omniComponentId,
+        component_list: [{
+          type: "video_base_component", id: omniComponentId, min_version: "1.0.0",
+          aigc_mode: "workbench", generate_type: "gen_video", process_type: 1,
+          metadata: {
+            type: "", id: util.uuid(), created_platform: 3,
+            created_platform_version: "", created_time_in_ms: String(Date.now()), created_did: "",
+          },
+          abilities: {
+            type: "", id: util.uuid(), gen_video: {
+              id: util.uuid(), type: "",
+              text_to_video_params: {
+                type: "", id: util.uuid(), model_req_key: model,
+                priority: 0, seed: Math.floor(Math.random() * 1000000000),
+                video_aspect_ratio: videoAspectRatio,
+                video_gen_inputs: [{
+                  type: "", id: util.uuid(), min_version: isSeedance25 ? "3.3.9" : DRAFT_VERSION,
+                  prompt: "", video_mode: 2, fps: 24, duration_ms: durationMs,
+                  ...(observedFastVip4s || isSeedance25 ? { resolution: finalResolution } : {}),
+                  unified_edit_input: { type: "", id: util.uuid(), material_list: materialList, meta_list: metaList },
+                  idip_meta_list: [],
+                }],
+              },
+              video_task_extra: omniMetrics,
+            },
+          },
+        }],
+      }),
+      http_common_info: { aid: Number(DEFAULT_ASSISTANT_ID) },
+    };
+    logger.info(`全能参考已上传图片 ${imageUris.length}、视频 ${videoPaths.length}、音频 ${audioPaths.length}`);
+  }
+
   // 构建请求参数
   const { aigc_data } = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
     {
+      cookie,
+      // Submission may already have reached Jimeng on a timeout/HTTP error.
+      // Do not create another paid task when its outcome is unknown.
+      maxRetries: 0,
       params: {
         aigc_features: "app_lip_sync",
         web_version: WEB_VERSION,
         da_version: DRAFT_VERSION,
         web_component_open_flag: 1, // Added
       },
-      data: {
+      data: omniRequestData || {
         extend: {
           root_model: model,
           m_video_commerce_info: videoCommerceInfo,
@@ -599,6 +665,7 @@ export async function generateVideo(
   let status = 20,
     failCode,
     item_list = [];
+  const VIDEO_SUCCESS_STATES = [21, 50];
   let retryCount = 0;
   const maxRetries = 60; // 20 mins
 
@@ -608,37 +675,11 @@ export async function generateVideo(
 
   while (VIDEO_PROCESSING_STATES.includes(status) && retryCount < maxRetries) {
     try {
-      const requestUrl = "/mweb/v1/get_history_by_ids";
-      const requestData = { history_ids: [historyId] };
-
-      let result;
-      // Alternative API logic (simplified for brevity but keeping robustness)
-      let useAlternativeApi = retryCount > 10 && retryCount % 2 === 0;
-
-      if (useAlternativeApi) {
-        result = await request(
-          "post",
-          "/mweb/v1/get_history_records",
-          refreshToken,
-          {
-            data: { history_record_ids: [historyId] },
-          }
-        );
-      } else {
-        result = await request("post", requestUrl, refreshToken, {
-          data: requestData,
-        });
-      }
-
-      const responseVideoUrl = extractVideoUrlFromResponse(result);
-      if (responseVideoUrl) return responseVideoUrl;
-
-      // Parse history
-      let historyData;
-      if (useAlternativeApi && result.history_records?.length)
-        historyData = result.history_records[0];
-      else if (result.history_list?.length)
-        historyData = result.history_list[0];
+      const result = await request("post", "/mweb/v1/get_history_by_ids", refreshToken, {
+        cookie,
+        data: { history_ids: [historyId] },
+      });
+      const historyData = videoHistoryRecord(result, historyId);
 
       if (!historyData) {
         retryCount++;
@@ -648,20 +689,22 @@ export async function generateVideo(
         continue;
       }
 
-      status = historyData.status;
+      status = Number(historyData.status);
       failCode = historyData.fail_code;
       item_list = historyData.item_list || [];
-
-      // Extraction Check
-      const tempVideoUrl = extractVideoUrlFromItemList(item_list);
-
-      if (tempVideoUrl) return tempVideoUrl; // Found it
 
       if (status === 30) {
         throw new APIException(
           EX.API_VIDEO_GENERATION_FAILED,
           `生成失败: ${failCode}`
         );
+      }
+
+      // Pending history may contain uploaded reference videos. Only return
+      // an item URL after the generation has reached a terminal state.
+      if (VIDEO_SUCCESS_STATES.includes(status)) {
+        const generatedVideoUrl = extractVideoUrlFromItemList(item_list);
+        if (generatedVideoUrl) return generatedVideoUrl;
       }
 
       if (VIDEO_PROCESSING_STATES.includes(status)) {
@@ -672,7 +715,7 @@ export async function generateVideo(
       }
     } catch (e) {
       if (e instanceof APIException) throw e;
-      logger.error(`轮询出错: ${e.message}`);
+      logger.error("轮询出错");
       retryCount++;
       await new Promise((r) => setTimeout(r, 5000));
     }
@@ -683,19 +726,20 @@ export async function generateVideo(
     throw new APIException(EX.API_VIDEO_GENERATION_FAILED, "超时");
   }
 
-  // Final Extraction (Redundant but safe)
-  const finalUrl = extractVideoUrlFromItemList(item_list);
-  if (finalUrl) return finalUrl;
+  // Final Extraction (only from verified terminal success states)
+  if (VIDEO_SUCCESS_STATES.includes(Number(status))) {
+    const finalUrl = extractVideoUrlFromItemList(item_list);
+    if (finalUrl) return finalUrl;
+  }
 
   throw new APIException(
     EX.API_VIDEO_GENERATION_FAILED,
-    `视频生成结束但未返回可用URL，状态码: ${status}${failCode ? `，失败码: ${failCode}` : ""}`
+    `视频生成未到达已核验完成状态，状态码: ${Number.isFinite(Number(status)) ? status : "unknown"}${failCode ? `，失败码: ${failCode}` : ""}`
   );
 }
 
 /**
- * 带自动降级重试的视频生成
- * 如果积分不足，自动降低分辨率和时长重试
+ * 兼容旧函数名；保持请求参数，只提交一次
  */
 export async function generateVideoWithRetry(
   _model: string,
@@ -705,84 +749,12 @@ export async function generateVideoWithRetry(
     resolution?: string;
     duration?: number;
     filePaths?: string[];
+    videoPaths?: string[];
+    audioPaths?: string[];
+    functionMode?: "omni_reference";
   },
-  refreshToken: string
+  refreshToken: string,
+  cookie?: string
 ): Promise<string> {
-  // 降级策略: 先降分辨率，再降时长
-  const modelConfig = await resolveVideoModelConfig(_model, refreshToken);
-  const resolutionLevels = getVideoResolutionFallbacks(
-    _model,
-    options.resolution,
-    modelConfig
-  );
-  const durationLevels = getVideoDurationFallbacks(modelConfig, options.duration);
-
-  let currentResIndex = Math.max(
-    0,
-    resolutionLevels.indexOf(resolutionLevels[0])
-  );
-  let currentDurIndex = 0;
-
-  while (currentResIndex < resolutionLevels.length) {
-    while (currentDurIndex < durationLevels.length) {
-      try {
-        const currentOptions = {
-          ...options,
-          resolution: resolutionLevels[currentResIndex],
-          duration: durationLevels[currentDurIndex],
-        };
-        logger.info(
-          `尝试生成视频，分辨率: ${currentOptions.resolution}，时长: ${currentOptions.duration}秒`
-        );
-        return await generateVideo(
-          _model,
-          prompt,
-          currentOptions,
-          refreshToken
-        );
-      } catch (error) {
-        // 检查是否为积分不足错误
-        const isInsufficientCredits =
-          error.code === EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS[0] ||
-          (error.message &&
-            (error.message.includes("积分不足") ||
-              error.message.includes("2039") ||
-              error.message.includes("1006")));
-
-        if (!isInsufficientCredits) {
-          // 其他错误直接抛出
-          throw error;
-        }
-
-        // 先尝试降低时长
-        if (currentDurIndex < durationLevels.length - 1) {
-          currentDurIndex++;
-          logger.warn(
-            `积分不足，自动降级到 ${durationLevels[currentDurIndex]}秒时长重试...`
-          );
-          continue;
-        }
-
-        // 时长已最低，尝试降低分辨率并重置时长
-        if (currentResIndex < resolutionLevels.length - 1) {
-          currentResIndex++;
-          currentDurIndex = 0; // 重置时长尝试
-          logger.warn(
-            `积分不足，自动降级到 ${resolutionLevels[currentResIndex]} 分辨率重试...`
-          );
-          break; // 跳出内层循环，继续外层
-        }
-
-        // 已是最低配置仍然失败
-        throw new APIException(
-          EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS,
-          "积分不足，已自动降至最低画质与时长仍然不足，请前往即梦官网 https://jimeng.jianying.com 充值积分"
-        );
-      }
-    }
-    // 重置时长索引用于下一轮分辨率尝试
-    currentDurIndex = 0;
-  }
-
-  throw new APIException(EX.API_VIDEO_GENERATION_FAILED, "视频生成失败");
+  return generateVideo(_model, prompt, options, refreshToken, cookie);
 }

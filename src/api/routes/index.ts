@@ -2,6 +2,7 @@ import fs from 'fs-extra';
 
 import Response from '@/lib/response/Response.ts';
 import images from "./images.ts";
+import audios, { audioCompatRoutes } from "./audios.ts";
 import chat from "./chat.ts";
 import ping from "./ping.ts";
 import token from './token.js';
@@ -23,6 +24,14 @@ export default [
                     }
                 });
             },
+            '/account-pool-ui.js': async () => new Response(await fs.readFile('public/account-pool-ui.js'), {
+                type: 'application/javascript',
+                headers: { 'Cache-Control': 'no-cache' }
+            }),
+            '/account-pool-ui.css': async () => new Response(await fs.readFile('public/account-pool-ui.css'), {
+                type: 'text/css',
+                headers: { 'Cache-Control': 'no-cache' }
+            }),
             '/favicon.ico': async () => {
                 // 返回空的 favicon，避免浏览器请求报错
                 return new Response(null, {
@@ -36,6 +45,8 @@ export default [
         }
     },
     images,
+    audios,
+    ...audioCompatRoutes,
     chat,
     ping,
     token,

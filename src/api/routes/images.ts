@@ -1,4 +1,7 @@
+import { recoverPoolTask } from "../../lib/pool-task-recovery.ts";
+import { withPoolRoutes } from "../../lib/pool-task-routes.ts";
 import _ from "lodash";
+import { DEFAULT_IMAGE_COUNT } from "../../lib/image-results.ts";
 
 import Request from "@/lib/request/Request.ts";
 import APIException from "@/lib/exceptions/APIException.ts";
@@ -36,9 +39,10 @@ function collectReferenceImagePaths(bodyFilePath: any, bodyFilePaths: any, files
   return _.uniq(paths);
 }
 
-export default {
+const routes = {
   prefix: "/v1/images",
 
+  get: { "/tasks/:taskId": request => recoverPoolTask(request, "image") },
   post: {
     "/generations": async (request: Request) => {
       request
@@ -57,23 +61,22 @@ export default {
           _.isUndefined(v) || (_.isArray(v) && _.every(v, _.isString))
         )
         .validate("headers.authorization", _.isString);
-      // refresh_token切分
-      const credential = await resolveAuthorization(request.headers.authorization);
-      const token = credential.token;
-      const statsKey = credential.managedKey || token;
-      // 随机挑选一个refresh_token
       const {
         model = DEFAULT_MODEL,
         prompt,
         negative_prompt: negativePrompt,
         ratio,
+        size,
         resolution,
         sample_strength: sampleStrength,
         response_format,
-        n = 1,
+        n = DEFAULT_IMAGE_COUNT,
         filePath: bodyFilePath,
         filePaths: bodyFilePaths,
       } = request.body;
+      const credential = await resolveAuthorization(request.headers.authorization, n);
+      const token = credential.token;
+      const statsKey = credential.managedKey || token;
       
       // 收集 JSON 路径和 multipart/form-data 上传的所有参考图。
       const files = request.files || {};
@@ -88,14 +91,17 @@ export default {
       const responseFormat = _.defaultTo(response_format, "url");
       let imageUrls;
       try {
-        imageUrls = await generateImagesWithRetry(model, prompt, {
-          ratio,
+        imageUrls = (await generateImagesWithRetry(model, prompt, {
+          ratio: ratio ?? size,
           resolution,
           sampleStrength,
           negativePrompt,
           filePaths,
           n,
-        }, token);
+        }, token)).filter((url): url is string => typeof url === "string" && url.trim().length > 0);
+        if (imageUrls.length === 0) {
+          throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "图像生成未返回有效结果");
+        }
         markCredentialSuccess(credential);
       } catch (error) {
         markCredentialFailure(credential);
@@ -129,3 +135,5 @@ export default {
     },
   },
 };
+
+export default withPoolRoutes(routes, "image", DEFAULT_MODEL);

@@ -4,12 +4,21 @@ import APIException from '@/lib/exceptions/APIException.ts';
 import EX from '@/api/consts/exceptions.ts';
 import logger from '@/lib/logger.ts';
 import util from '@/lib/util.ts';
+import { requestDisconnectSignal } from '../request-disconnect.ts';
 
 export interface RequestOptions {
     time?: number;
 }
 
 export default class Request {
+
+    private rawResponse: any;
+    private disconnectSignal?: AbortSignal;
+
+    /** Lazily bind cancellation only for handlers that use it. */
+    get signal(): AbortSignal {
+        return this.disconnectSignal ??= requestDisconnectSignal(this.rawResponse);
+    }
 
     /** 请求方法 */
     method: string;
@@ -37,6 +46,7 @@ export default class Request {
     time: number;
 
     constructor(ctx, options: RequestOptions = {}) {
+        this.rawResponse = ctx.res;
         const { time } = options;
         this.method = ctx.request.method;
         this.url = ctx.request.url;
