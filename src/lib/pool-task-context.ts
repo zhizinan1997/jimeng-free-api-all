@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { selectGeneratedImageUrls } from './image-results.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import type { AccountSelection } from './account-pool.ts';
+import type { CreditRetryDecision } from './account-pool-scheduler.ts';
 
 export type TaskKind = 'image' | 'video' | 'audio' | 'text' | 'upload';
 export interface PoolTaskStore {
@@ -9,6 +11,8 @@ export interface PoolTaskStore {
   settleTask(id: string): Promise<void>;
   readTask?(id: string, ownerHash: string): { state: string; upstreamTaskId?: string | null; requestedImageCount?: number | null; settling?: boolean };
   readTaskResult?(id: string, ownerHash: string): unknown;
+  rejectTaskForCredits?(id: string, ownerHash: string, accountId: string): void;
+  retryTaskAfterCreditRejection?(id: string, ownerHash: string, accountId: string): Promise<CreditRetryDecision>;
 }
 export interface TaskContext {
   requestId: string; requestFingerprint: string; kind: TaskKind; model: string;
@@ -17,6 +21,10 @@ export interface TaskContext {
   accountId?: string; settlementPending?: boolean; pool?: PoolTaskStore; state?: string; upstreamTaskId?: string;
   /** Proven asset identities; never populated from a client accountId. */
   assets?: Map<string, { durationMs: number }>;
+  creditRejected?: boolean;
+  creditRetryCode?: string;
+  creditRetryMessage?: string;
+  onAccountChanged?: (selection: AccountSelection) => void;
 }
 const storage = new AsyncLocalStorage<TaskContext>();
 export const ownerHash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -120,6 +128,38 @@ export function acceptPoolSubmission(upstreamTaskId?: string) {
   if (!upstreamTaskId) throw new Error('上游提交未返回任务 ID，保留待确认，禁止重复提交');
   context.pool!.transitionTask(context.taskId, { state: 'submitted', upstreamTaskId });
   context.state = 'submitted'; context.upstreamTaskId = upstreamTaskId;
+}
+export function rejectPoolSubmissionForCredits(): boolean {
+  const context = currentPoolTask();
+  if (!context?.taskId || !context.ownerHash || !context.accountId || !context.pool?.rejectTaskForCredits) return false;
+  context.pool.rejectTaskForCredits(context.taskId, context.ownerHash, context.accountId);
+  context.creditRejected = true;
+  context.state = 'failed';
+  return true;
+}
+export async function runWithPoolCreditRetry<T>(token: string, cookie: string | undefined, generate: (token: string, cookie?: string) => Promise<T>): Promise<T> {
+  const context = currentPoolTask();
+  let activeToken = token;
+  let activeCookie = cookie;
+  while (true) {
+    try {
+      return await generate(activeToken, activeCookie);
+    } catch (error) {
+      if (error?.errcode !== -2009 || !context?.creditRejected || !context.taskId || !context.ownerHash || !context.accountId || !context.pool?.retryTaskAfterCreditRejection) throw error;
+      context.creditRejected = false;
+      const decision = await context.pool.retryTaskAfterCreditRejection(context.taskId, context.ownerHash, context.accountId);
+      if (!decision.lease) {
+        context.creditRetryCode = decision.code;
+        context.creditRetryMessage = decision.message;
+        throw error;
+      }
+      const next = decision.lease;
+      Object.assign(context, { state: next.state, accountId: next.account.id, credential: next.credential, sessionId: next.sessionId, settlementPending: false });
+      context.onAccountChanged?.(next);
+      activeToken = next.sessionId;
+      activeCookie = next.credential;
+    }
+  }
 }
 export async function finishPoolTask(state: 'succeeded' | 'failed', error?: string, result?: unknown) {
   const context = currentPoolTask();

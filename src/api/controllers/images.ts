@@ -7,6 +7,7 @@ import util from "@/lib/util.ts";
 import { getCredit, receiveCredit, request, uploadFile } from "./core.ts";
 import logger from "@/lib/logger.ts";
 import { resolveImageModelConfig } from "./models.ts";
+import { runWithPoolCreditRetry } from "../../lib/pool-task-context.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
 export const DEFAULT_MODEL = "jimeng-image-5.0-lite";
@@ -167,7 +168,12 @@ export function getModel(model: string) {
   return MODEL_MAP[model] || MODEL_MAP[DEFAULT_MODEL];
 }
 
-export async function generateImages(
+export async function generateImages(...args: Parameters<typeof generateImagesForAccount>) {
+  const [model, prompt, options, token] = args;
+  return runWithPoolCreditRetry(token, undefined, nextToken => generateImagesForAccount(model, prompt, options, nextToken));
+}
+
+async function generateImagesForAccount(
   _model: string,
   prompt: string,
   {

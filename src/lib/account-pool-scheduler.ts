@@ -13,6 +13,7 @@ export interface PoolSettings { mode: 'auto' | 'fixed'; fixedAccountId: string |
 export interface PoolEvent { id: string; type: string; accountId: string | null; fromAccountId: string | null; toAccountId: string | null; reason: string; createdAt: string; actor?: string }
 export interface AcquireTaskInput { requestId: string; ownerHash: string; requestFingerprint: string; kind: PoolTaskKind; model: string; estimatedCredits: number | null; requestedImageCount?: number; preferredAccountId?: string }
 export interface PoolLease extends AccountSelection { taskId: string; reused: boolean; state: PoolTaskState; upstreamTaskId: string | null }
+export interface CreditRetryDecision { lease: PoolLease | null; code?: string; message?: string }
 export interface PoolTaskRecoveryRecord { task: PoolTask; ownerHash: string; selection: AccountSelection }
 export class PoolError extends Error {
   statusCode: number;
@@ -58,6 +59,14 @@ export function createPoolScheduler(deps: Dependencies) {
     if (!taskColumns.some((column: any) => column.name === 'requested_image_count')) {
       db.exec('ALTER TABLE pool_tasks ADD COLUMN requested_image_count INTEGER CHECK (requested_image_count BETWEEN 1 AND 8)');
     }
+    for (const [name, definition] of Object.entries({
+      credit_rejected: 'INTEGER NOT NULL DEFAULT 0', retry_mode: "TEXT NOT NULL DEFAULT 'fixed'",
+      preferred_account_id: 'TEXT', retry_accounts_json: "TEXT NOT NULL DEFAULT '[]'"
+    })) if (!taskColumns.some((column: any) => column.name === name)) db.exec(`ALTER TABLE pool_tasks ADD COLUMN ${name} ${definition}`);
+    db.exec(`CREATE TABLE IF NOT EXISTS pool_credit_rejections (
+      task_id TEXT NOT NULL, account_id TEXT NOT NULL, subject_ids TEXT NOT NULL,
+      created_at TEXT NOT NULL, PRIMARY KEY(task_id, account_id)
+    )`);
     if (!columns.has('priority')) {
       db.prepare('SELECT id FROM jimeng_accounts ORDER BY created_at, rowid').all().forEach((r: any, i: number) => db.prepare('UPDATE jimeng_accounts SET priority=? WHERE id=?').run(i, r.id));
     }
@@ -235,10 +244,63 @@ export function createPoolScheduler(deps: Dependencies) {
       const selected = candidate(input.estimatedCredits, input.model, input.preferredAccountId), timestamp = stamp(), id = crypto.randomUUID();
       const previous = db.prepare("SELECT account_id FROM pool_tasks ORDER BY rowid DESC LIMIT 1").get();
       db.prepare('INSERT INTO pool_tasks (id, request_id, owner_hash, fingerprint, account_id, account_name, credential_version, kind, model, state, estimated_credits, requested_image_count, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, input.requestId, input.ownerHash, input.requestFingerprint, selected.id, selected.name, selected.credential_version, input.kind, input.model, 'reserved', input.estimatedCredits, input.requestedImageCount ?? null, timestamp, timestamp);
+      db.prepare('UPDATE pool_tasks SET retry_mode=?, preferred_account_id=?, retry_accounts_json=? WHERE id=?')
+        .run(getSettings().mode, input.preferredAccountId ?? null, JSON.stringify(rows().map((account: any) => account.id)), id);
       db.prepare('UPDATE jimeng_accounts SET last_used_at=?, updated_at=? WHERE id=?').run(timestamp, timestamp, selected.id);
       event('task_reserved', selected.id, '新任务已绑定并原子预占');
       if (previous?.account_id !== selected.id) event('account_switched', selected.id, input.preferredAccountId ? '已核验的素材或会话归属' : getSettings().mode === 'fixed' ? '固定账号策略' : '手动排序中首个合格账号', previous?.account_id || null, selected.id);
       return lease(task(id), false);
+    }).immediate();
+  }
+  function rejectTaskForCredits(id: string, owner: string, accountId: string) {
+    db.transaction(() => {
+      const current = owned(id, owner);
+      if (current.account_id !== accountId || current.state !== 'submitting' || current.upstream_task_id || !current.held) throw new PoolError('任务已收单或状态待确认，无法按积分拒单处理', 409);
+      const peers = subjectPeers(row(accountId));
+      const timestamp = stamp();
+      db.prepare('INSERT INTO pool_credit_rejections VALUES (?,?,?,?)').run(id, accountId, JSON.stringify(peers.map((peer: any) => peer.id)), timestamp);
+      db.prepare("UPDATE pool_tasks SET state='failed', held=0, credit_rejected=1, result_ciphertext=NULL, error=?, updated_at=? WHERE id=?")
+        .run('上游明确因积分不足拒绝收单', timestamp, id);
+      for (const peer of peers) db.prepare('UPDATE jimeng_accounts SET status_checked_at=NULL WHERE id=?').run(peer.id);
+      event('credits_rejected', accountId, `任务 ${id} 因积分不足被上游拒绝收单，已释放本次占位`);
+    }).immediate();
+  }
+  async function retryTaskAfterCreditRejection(id: string, owner: string, accountId: string): Promise<CreditRetryDecision> {
+    function rejectedTask() {
+      const current = owned(id, owner);
+      if (current.account_id !== accountId || current.state !== 'failed' || !current.credit_rejected || current.upstream_task_id || current.held) throw new PoolError('任务缺少可换号的明确积分拒单记录', 409);
+      return current;
+    }
+    rejectedTask();
+    await refreshStaleAccounts();
+    return db.transaction(() => {
+      const current = rejectedTask();
+      const stop = (code: string, message: string): CreditRetryDecision => {
+        db.prepare('UPDATE pool_tasks SET credit_rejected=0, error=?, updated_at=? WHERE id=?').run(message, stamp(), id);
+        event('credit_retry_stopped', accountId, `任务 ${id}：${message}`);
+        return { lease: null, code, message };
+      };
+      if (current.preferred_account_id) return stop('reference_account_bound', '参考素材绑定原账号，需要原始素材才能换号执行');
+      if (current.retry_mode !== 'auto' || getSettings().mode !== 'auto') return stop('fixed_account_insufficient', '固定账号积分不足以执行当前任务');
+      const all = rows();
+      const rejected = db.prepare('SELECT subject_ids FROM pool_credit_rejections WHERE task_id=?').all(id);
+      const excluded = new Set<string>(rejected.flatMap((record: any) => json(record.subject_ids, [])));
+      const originalIds: string[] = json(current.retry_accounts_json, []);
+      const skippedIds = new Set(excluded);
+      for (const account of all) if (subjectPeers(account, all).some((peer: any) => excluded.has(peer.id))) skippedIds.add(account.id);
+      const remainingIds = originalIds.filter(accountId => !skippedIds.has(accountId));
+      const candidates = all.filter((account: any) => remainingIds.includes(account.id));
+      const selected = candidates.find((account: any) => eligibility(account, current.estimated_credits, current.model, all).eligible);
+      if (!selected) return remainingIds.length
+        ? stop('no_executable_account', '积分不足换号后，暂无满足余额、门槛及账号资格的可执行账号')
+        : stop('insufficient_credits_exhausted', '本次候选账号均已因积分不足被上游拒绝收单');
+      const timestamp = stamp();
+      db.prepare("UPDATE pool_tasks SET account_id=?, account_name=?, credential_version=?, state='reserved', held=1, credit_rejected=0, error=NULL, updated_at=? WHERE id=?")
+        .run(selected.id, selected.name, selected.credential_version, timestamp, id);
+      const next = lease(task(id), false);
+      db.prepare('UPDATE jimeng_accounts SET last_used_at=?, updated_at=? WHERE id=?').run(timestamp, timestamp, selected.id);
+      event('account_switched', selected.id, `任务 ${id} 原账号积分不足，按排序接力执行`, accountId, selected.id);
+      return { lease: next };
     }).immediate();
   }
   function transitionTask(id: string, change: { state: PoolTaskState; upstreamTaskId?: string; result?: unknown; error?: string }): void {
@@ -363,7 +425,7 @@ export function createPoolScheduler(deps: Dependencies) {
     const reasons: Record<string, string> = { account_created: '新增账号', account_updated: '更新账号备注或配置', credential_updated: '更换凭据并清除旧余额及身份核验', account_enabled: '启用账号接收新任务', account_disabled: '停用新派发，保留已绑定任务', account_deleted: '删除无未结算任务的账号' };
     event(type, id, reasons[type] || '账号管理配置已更新', null, null, actor);
   }
-  return { getSettings, updateSettings, reorderAccounts, getDashboard, listTasks, listEvents, acquireTask, transitionTask, settleTask, readTask, readTaskCredential, readTaskForRecovery,
+  return { getSettings, updateSettings, reorderAccounts, getDashboard, listTasks, listEvents, acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskForRecovery,
     readTaskResult: (id: string, owner: string) => {
       const t = owned(id, owner);
       const result = t.result_ciphertext ? JSON.parse(deps.decrypt(t.result_ciphertext)) : null;

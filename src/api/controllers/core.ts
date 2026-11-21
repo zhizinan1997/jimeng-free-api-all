@@ -1,4 +1,4 @@
-import { acceptPoolSubmission, beginPoolSubmission, failPoolTask, finishPoolTask, observePoolHistory, poolCookie } from "../../lib/pool-task-context.ts";
+import { acceptPoolSubmission, beginPoolSubmission, failPoolTask, finishPoolTask, observePoolHistory, poolCookie, rejectPoolSubmissionForCredits } from "../../lib/pool-task-context.ts";
 import { PassThrough } from "stream";
 import path from "path";
 import _ from "lodash";
@@ -215,6 +215,10 @@ export async function request(
   if (isSubmission) beginPoolSubmission(options.data?.submit_id);
   const acceptResponse = async (response: any) => {
     if (response.status >= 400) throw new Error(`上游 HTTP ${response.status}`);
+    const returnedTask = response.data?.data?.aigc_data;
+    if (isSubmission && String(response.data?.ret) !== '0' && (returnedTask?.history_record_id || returnedTask?.task?.task_id)) {
+      throw new Error('上游拒单响应同时包含任务标识，需要保留原账号确认');
+    }
     const data = checkResult(response);
     if (isSubmission) {
       const id = data?.aigc_data?.history_record_id || data?.aigc_data?.task?.task_id;
@@ -333,7 +337,9 @@ export async function request(
 
   }
   if (isSubmission) {
-    if (lastError instanceof APIException && (lastError.compare(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS) || lastError.compare(EX.API_RISK_CONTROL_REJECTED))) await finishPoolTask("failed", "上游明确拒绝生成");
+    if (lastError instanceof APIException && lastError.compare(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS)) {
+      if (!rejectPoolSubmissionForCredits()) await finishPoolTask("failed", "上游明确拒绝生成");
+    } else if (lastError instanceof APIException && lastError.compare(EX.API_RISK_CONTROL_REJECTED)) await finishPoolTask("failed", "上游明确拒绝生成");
     else await failPoolTask();
   }
   throw lastError;
@@ -657,7 +663,7 @@ export function checkResult(result: AxiosResponse) {
   logger.error(`❌ [API错误] 错误码: ${ret}`);
   
   // 即梦积分不足错误码：5000 (旧) 或 1006 (新)
-  if (ret === '5000' || ret === '1006')
+  if (String(ret) === '5000' || String(ret) === '1006')
     throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[积分不足]: ${errmsg} (错误码: ${ret})`);
 
   // 上游风控拦截：Seedance 2.0 pro/fast 等链路要求携带浏览器端 SDK 生成的 a_bogus/msToken 签名

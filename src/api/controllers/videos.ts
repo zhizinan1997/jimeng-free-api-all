@@ -9,6 +9,7 @@ import { videoHistoryRecord } from "./video-history.ts";
 import logger from "@/lib/logger.ts";
 import { JimengModelConfig, resolveVideoModelConfig } from "./models.ts";
 import { validateSeedance25Options } from "./seedance25-policy.ts";
+import { runWithPoolCreditRetry } from "../../lib/pool-task-context.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
 export const DEFAULT_MODEL = "jimeng-video-seedance-2.0";
@@ -292,7 +293,12 @@ function detectVideoDuration(prompt: string): number | null {
  * @param refreshToken 刷新令牌
  * @returns 视频URL
  */
-export async function generateVideo(
+export async function generateVideo(...args: Parameters<typeof generateVideoForAccount>) {
+  const [model, prompt, options, token, cookie] = args;
+  return runWithPoolCreditRetry(token, cookie, (nextToken, nextCookie) => generateVideoForAccount(model, prompt, options, nextToken, nextCookie));
+}
+
+async function generateVideoForAccount(
   _model: string,
   prompt: string,
   {

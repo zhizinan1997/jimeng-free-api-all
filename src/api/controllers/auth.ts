@@ -51,8 +51,10 @@ export async function resolveAuthorization(authorization: string, imageCount = D
         requestedImageCount: context.kind === "image" ? imageCount : undefined,
         credential: lease.credential, sessionId: lease.sessionId, accountId: lease.account.id });
       touchApiKey(managedKey);
-      return { token: lease.sessionId, accountId: lease.account.id, managedKey,
+      const credential: ResolvedCredential = { token: lease.sessionId, accountId: lease.account.id, managedKey,
         cookie: lease.credential, poolTaskId: lease.taskId, ownerHash: owner };
+      context.onAccountChanged = next => Object.assign(credential, { token: next.sessionId, accountId: next.account.id, cookie: next.credential });
+      return credential;
     }
     // Read-only callers do not acquire a task or update lastUsedAt. Inspect the
     // fixed account even if it cannot accept new work, so its failure is visible.

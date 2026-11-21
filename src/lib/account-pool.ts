@@ -481,7 +481,7 @@ db.transaction(() => {
         vip_credit=NULL, total_credit=NULL, status_checked_at=NULL, status_error=NULL`);
 }).immediate();
 
-export const { acquireTask, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult, readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts, listTasks, listEvents, refreshStaleAccounts } = scheduler;
+export const { acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult, readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts, listTasks, listEvents, refreshStaleAccounts } = scheduler;
 export const refreshStatus = scheduler.refreshAccount;
 
 // Explicit named service API for callers that do not want to use the default object.
@@ -506,7 +506,7 @@ export const accountPool = {
   setMembershipStatusProvider,
   setCreditStatusProvider,
   readTaskAccount,
-  acquireTask, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult,
+  acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult,
   readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts,
   listTasks, listEvents, refreshStaleAccounts, scanTasksForMaintenance: scheduler.scanTasksForMaintenance
 };

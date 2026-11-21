@@ -301,7 +301,7 @@ const routes = {
         if (shouldWait && taskId) {
           const completed = await waitForAudioCompletion(
             String(taskId),
-            token,
+            credential.token,
             credential.cookie
           );
           markCredentialSuccess(credential);
@@ -486,7 +486,7 @@ const compatRoutes = [
           );
           const completed = await waitForAudioCompletion(
             String(taskId),
-            token,
+            credential.token,
             credential.cookie
           );
           markCredentialSuccess(credential);
@@ -619,7 +619,7 @@ const compatRoutes = [
           );
           const completed = await waitForAudioCompletion(
             String(taskId),
-            token,
+            credential.token,
             credential.cookie
           );
           markCredentialSuccess(credential);

@@ -30,6 +30,9 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
   let behavior = 'success'; let sequence = 0;
   const history = new Map();
   let imageBatch;
+  const rejectedSessions = new Set();
+  const balances = new Map();
+  let creditErrorCode = '1006';
   axios.defaults.adapter = async config => {
     const body = typeof config.data === 'string' ? JSON.parse(config.data) : Buffer.isBuffer(config.data) ? {} : config.data || {};
     const url = new URL(config.url); const route = url.pathname;
@@ -48,7 +51,8 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
     if (url.searchParams.get('Action') === 'ApplyUploadInner') return raw({Result:{InnerUploadAddress:{UploadNodes:[{UploadHost:'fixture.vodupload.com',SessionKey:'test-upload-session',StoreInfos:[{StoreUri:'test',Auth:'test-upload-auth'}]}]}}});
     if (url.hostname === 'fixture.vodupload.com') return raw({code:2000});
     if (url.searchParams.get('Action') === 'CommitUploadInner') return raw({Result:{Results:[{Vid:'v01234567890123456789012345',VideoMeta:{Duration:7}}]}});
-    if (route === '/commerce/v1/benefits/user_credit') data = {credit:{gift_credit:1000,purchase_credit:0,vip_credit:0}};
+    const session = String(config.headers.get('Cookie') || '').match(/sessionid=([^;]+)/)?.[1];
+    if (route === '/commerce/v1/benefits/user_credit') data = {credit:{gift_credit:balances.get(session) ?? 1000,purchase_credit:0,vip_credit:0}};
     else if (route === '/passport/account/info/v2') {
       const cookieHeader = typeof config.headers?.get === 'function' ? config.headers.get('Cookie') : config.headers?.Cookie || '';
       const sessionMatch = String(cookieHeader).match(/sessionid=([^;]+)/);
@@ -57,6 +61,8 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
     else if (route.endsWith('get_common_config')) data = {};
     else if (route === '/mweb/v1/get_upload_token') data = {access_key_id:'test-access',secret_access_key:'test-secret',session_token:'test-session',space_name:'test-space'};
     else if (route === '/mweb/v1/aigc_draft/generate') {
+      if (rejectedSessions.has(session)) return raw({ret:creditErrorCode,errmsg:'insufficient'});
+      if (behavior === 'credit-with-task') return raw({ret:'1006',errmsg:'ambiguous',data:{aigc_data:{history_record_id:'unexpected-id'}}});
       if (behavior === 'risk-reject') return {status:200,statusText:'OK',headers:{},config,data:{ret:'4013',errmsg:'risk rejected'}};
       if (behavior === 'slow-timeout') { await new Promise(resolve=>setTimeout(resolve,30)); throw Object.assign(new Error('secret=leak-guard network timeout'), {code:'ETIMEDOUT'}); }
       if (behavior === 'timeout') throw Object.assign(new Error('network timeout'), {code:'ETIMEDOUT'});
@@ -92,7 +98,9 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
     export {runWithPoolTask,requestIdentity,ownerHash,beginPoolSubmission,acceptPoolSubmission} from ${JSON.stringify(path.join(root,'src/lib/pool-task-context.ts'))};`;
   const outfile = path.join(dir,'app.cjs');
   await build({stdin:{contents:entry,resolveDir:root,loader:'ts'},outfile,bundle:true,platform:'node',format:'cjs',packages:'external',logLevel:'silent',tsconfig:path.join(root,'tsconfig.json'),
-    plugins:[{name:'isolated-agent-transport',setup(build) { build.onLoad({filter:/agent-browser-transport\.ts$/}, () => ({loader:'ts',contents:`
+    plugins:[{name:'isolated-agent-transport',setup(build) {
+      build.onResolve({filter:/^mime$/}, () => ({path:path.join(root,'node_modules/mime/dist/src/index.js')}));
+      build.onLoad({filter:/agent-browser-transport\.ts$/}, () => ({loader:'ts',contents:`
       import {PassThrough,Readable} from 'node:stream';
       const sse=(event,data)=>'event: '+event+'\\ndata: '+JSON.stringify(data)+'\\n\\n';
       export async function openAgentBrowserTransport(pairs,signal) {
@@ -234,6 +242,120 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
       }).catch(e=>{console.error(e);process.exitCode=1});
     `], {cwd:dir, env:{...process.env, TEST_BUNDLE:outfile, TEST_TASK:original, TEST_KEY:key, TEST_EXPECTED:JSON.stringify(urls.slice(0, 2))}, encoding:'utf8', timeout:15000});
     assert.equal(child.status, 0, child.stderr || child.stdout);
+  });
+  await t.test('credit rejection relays one logical request through media entrypoints with original parameters', async t => {
+    const source = 'data:audio/mpeg;base64,dGVzdA==';
+    const image = 'data:image/png;base64,dGVzdA==';
+    const compatAudio = app.audioCompatRoutes.find(route => route.prefix === '/v1/audio');
+    const compatTts = app.audioCompatRoutes.find(route => route.prefix === '/api/v3/tts');
+    const cases = [
+      ['image', app.imageRoutes, '/generations', {prompt:'relay image',resolution:'2k',n:2,filePaths:[image]}, false],
+      ['video', app.videoRoutes, '/generations', {prompt:'relay video',resolution:'720p',duration:5,file_paths:[image]}, false],
+      ['audio', app.audioRoutes, '/generations', {prompt:'relay audio',audio_paths:[source],mode:'unified_edit',wait:true}, false],
+      ['audio-async', compatAudio, '/tasks', {input:'relay async'}, false],
+      ['tts', compatTts, '/create', {text_prompt:'relay tts'}, false],
+      ['speech', compatAudio, '/speech', {input:'relay speech'}, false],
+      ['chat-json', app.chatRoutes, '/completions', {model:'jimeng-image-5.0-lite',messages:[{role:'user',content:'relay chat'}]}, false],
+      ['chat-sse', app.chatRoutes, '/completions', {model:'jimeng-image-5.0-lite',stream:true,messages:[{role:'user',content:'relay chat sse'}]}, true],
+    ];
+    const originalSettings = app.pool.getSettings();
+    const oldTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...args) => oldTimeout(fn, ms === 5000 ? 1 : ms, ...args);
+    app.pool.updateSettings({...originalSettings,mode:'auto',fixedAccountId:null,threshold:40});
+    balances.set('fixture-a',50); balances.set('fixture-b',100);
+    await app.pool.refreshStatus(a.id); await app.pool.refreshStatus(b.id);
+    rejectedSessions.add('fixture-a');
+    try {
+      for (const [name, routes, route, body, stream] of cases) await t.test(name, async () => {
+        creditErrorCode = name === 'image' ? 5000 : '1006';
+        const before = submissions().length, beforeTasks = app.pool.listTasks().total, beforeCalls = calls.length;
+        const requestId = 'relay-' + name;
+        const invoke = () => routes.post[route](req(body,requestId));
+        const result = await invoke();
+        if (stream) {
+          let output = ''; for await (const chunk of result.body) output += chunk.toString();
+          assert.match(output,/finish_reason":"stop/); assert.doesNotMatch(output,/media_generation_incomplete/);
+        }
+        assert.ok((result.statusCode || 200) < 400,JSON.stringify(result.body));
+        const task = app.pool.listTasks().items.find(task => task.requestId === requestId);
+        assert.ok(task); assert.equal(task.accountId,b.id); assert.ok(task.upstreamTaskId);
+        assert.equal(app.pool.listTasks().total,beforeTasks + 1);
+        const sent = submissions().slice(before);
+        assert.equal(sent.length,2); assert.match(sent[0].cookie,/sessionid=fixture-a/); assert.match(sent[1].cookie,/sessionid=fixture-b/);
+        const draft = JSON.parse(sent[1].body.draft_content).component_list[0];
+        if (name === 'image') assert.equal(draft.abilities.gen_option.gen_count,2);
+        if (name === 'video') assert.equal(draft.abilities.gen_video.text_to_video_params.video_gen_inputs[0].duration_ms,5000);
+        if (['image','video','audio'].includes(name)) {
+          const uploads = calls.slice(beforeCalls).filter(call => call.route === '/mweb/v1/get_upload_token');
+          assert.ok(uploads.some(call => /sessionid=fixture-a/.test(call.cookie)));
+          assert.ok(uploads.some(call => /sessionid=fixture-b/.test(call.cookie)));
+        }
+        for (const call of calls.slice(beforeCalls).filter(call => call.route === '/mweb/v1/get_history_by_ids')) assert.match(call.cookie,/sessionid=fixture-b/);
+        assert.ok(app.pool.listEvents(200).items.some(event => event.fromAccountId === a.id && event.toAccountId === b.id && event.reason.includes(task.id)));
+        if (task.state === 'submitted') await app.audioRoutes.get['/generations/:taskId'](req({},'query',{taskId:task.upstreamTaskId}));
+        const replay = await invoke(); assert.equal(replay.body.reused,true); assert.equal(submissions().length,before+2);
+        assert.equal(app.pool.readTask(task.id,app.ownerHash(key)).settling,false);
+      });
+    } finally {
+      globalThis.setTimeout = oldTimeout;
+      rejectedSessions.clear(); balances.clear();
+      app.pool.updateSettings({...app.pool.getSettings(),mode:originalSettings.mode,fixedAccountId:originalSettings.fixedAccountId,threshold:originalSettings.threshold});
+      await app.pool.refreshStatus(a.id); await app.pool.refreshStatus(b.id);
+    }
+  });
+  await t.test('credit fallback boundaries exhaust accounts, preserve fixed/material rules, and stop on ambiguity', async t => {
+    const settings = app.pool.getSettings();
+    app.pool.updateSettings({...settings,mode:'auto',fixedAccountId:null,threshold:40});
+    const reset = async () => {
+      rejectedSessions.clear(); behavior='success';
+      app.pool.markSuccess(a.id); app.pool.markSuccess(b.id);
+      app.pool.updateSettings({...app.pool.getSettings(),mode:'auto',fixedAccountId:null});
+      await app.pool.refreshStatus(a.id); await app.pool.refreshStatus(b.id);
+    };
+    try {
+      await t.test('all refused accounts produce one failed task without duplicate replay', async () => {
+        await reset(); rejectedSessions.add('fixture-a'); rejectedSessions.add('fixture-b');
+        const before = submissions().length;
+        const submit = () => app.imageRoutes.post['/generations'](req({prompt:'all refused'},'exhausted'));
+        const result = await submit();
+        assert.equal(result.statusCode,422); assert.equal(result.body.error.reason,'insufficient_credits_exhausted');
+        assert.equal(result.body.state,'failed'); assert.equal(submissions().length,before+2);
+        assert.equal(app.pool.readTask(result.body.pool_task_id,app.ownerHash(key)).settling,false);
+        assert.equal((await submit()).body.reused,true); assert.equal(submissions().length,before+2);
+      });
+      await t.test('fixed account refuses once although a backup is available', async () => {
+        await reset(); app.pool.updateSettings({...app.pool.getSettings(),mode:'fixed',fixedAccountId:a.id});
+        rejectedSessions.add('fixture-a'); const before = submissions().length;
+        const result = await app.imageRoutes.post['/generations'](req({prompt:'fixed refused'},'fixed-refused'));
+        assert.equal(result.body.error.reason,'fixed_account_insufficient'); assert.equal(submissions().length,before+1);
+      });
+      await t.test('raw material identifier remains pinned with an explicit source-required error', async () => {
+        await reset();
+        const vid = 'v0'+'z'.repeat(24), account = app.pool.readTaskAccount(a.id);
+        app.rememberUploadAsset(vid,5000,{token:account.sessionId,cookie:account.credential,accountId:a.id,managedKey:key});
+        rejectedSessions.add('fixture-a'); const before = submissions().length;
+        const result = await app.audioRoutes.post['/generations'](req({prompt:'material bound',audio_paths:[vid]},'material-bound'));
+        assert.equal(result.body.error.reason,'reference_account_bound'); assert.equal(submissions().length,before+1);
+      });
+      await t.test('credit error containing a task identifier stays unknown on the original account', async () => {
+        await reset(); behavior='credit-with-task'; const before = submissions().length;
+        const result = await app.imageRoutes.post['/generations'](req({prompt:'ambiguous refusal'},'ambiguous-refusal'));
+        assert.equal(result.body.state,'unknown'); assert.equal(submissions().length,before+1);
+        const task = app.pool.readTask(result.body.pool_task_id,app.ownerHash(key)); assert.equal(task.accountId,a.id);
+        app.pool.transitionTask(task.id,{state:'failed'}); await app.pool.settleTask(task.id);
+      });
+      await t.test('timeout after relaying stays bound to the backup and replay sends no new request', async () => {
+        await reset(); rejectedSessions.add('fixture-a'); behavior='timeout'; const before = submissions().length;
+        const submit = () => app.imageRoutes.post['/generations'](req({prompt:'relay then timeout'},'relay-timeout'));
+        const result = await submit(); assert.equal(result.body.state,'unknown'); assert.equal(submissions().length,before+2);
+        const task = app.pool.readTask(result.body.pool_task_id,app.ownerHash(key)); assert.equal(task.accountId,b.id);
+        assert.equal((await submit()).body.reused,true); assert.equal(submissions().length,before+2);
+        app.pool.transitionTask(task.id,{state:'failed'}); await app.pool.settleTask(task.id);
+      });
+    } finally {
+      await reset();
+      app.pool.updateSettings({...app.pool.getSettings(),mode:settings.mode,fixedAccountId:settings.fixedAccountId,threshold:settings.threshold});
+    }
   });
   await t.test('network timeout creates one unknown task; replay cannot repeat submission', async () => {
     behavior='timeout'; const before=submissions().length;

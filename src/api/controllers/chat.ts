@@ -188,9 +188,10 @@ export async function createCompletion(
         let creditsUsed = 0;
         let remainingCredits = 0;
         try {
-          const afterCredit = await getCredit(refreshToken);
+          const actualToken = currentPoolTask()?.sessionId || refreshToken;
+          const afterCredit = await getCredit(actualToken);
           remainingCredits = afterCredit.totalCredit;
-          creditsUsed = Math.max(0, creditsBefore - remainingCredits);
+          creditsUsed = actualToken === refreshToken ? Math.max(0, creditsBefore - remainingCredits) : 0;
           logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
         } catch (e) { /* 忽略积分查询错误 */ }
 
@@ -253,9 +254,10 @@ export async function createCompletion(
       let creditsUsed = 0;
       let remainingCredits = 0;
       try {
-        const afterCredit = await getCredit(refreshToken);
+        const actualToken = currentPoolTask()?.sessionId || refreshToken;
+        const afterCredit = await getCredit(actualToken);
         remainingCredits = afterCredit.totalCredit;
-        creditsUsed = Math.max(0, creditsBefore - remainingCredits);
+        creditsUsed = actualToken === refreshToken ? Math.max(0, creditsBefore - remainingCredits) : 0;
         logger.info(`积分消耗: ${creditsUsed}, 剩余: ${remainingCredits}`);
       } catch (e) { /* 忽略积分查询错误 */ }
 

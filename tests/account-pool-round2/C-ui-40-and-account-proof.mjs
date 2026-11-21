@@ -48,6 +48,24 @@ await build({
       let latestTask;
       process.on('message', async m => {
         try {
+          if(m.action==='creditRelay') {
+            pool.setEnabled(a.id,false); pool.setEnabled(b.id,false);
+            pool.updateSettings({...pool.getSettings(),mode:'auto',fixedAccountId:null,threshold:40});
+            pool.setCreditStatusProvider(async token => ({totalCredit:token==='relay-primary' ? 50:100}));
+            const primary=pool.create({name:'积分接力前排 50',sessionId:'relay-primary'});
+            const backup=pool.create({name:'积分接力后排 100',sessionId:'relay-backup'});
+            await pool.refreshStatus(primary.id); await pool.refreshStatus(backup.id);
+            const lease=await pool.acquireTask({requestId:'credit-relay-ui',requestFingerprint:'credit-relay-ui',ownerHash:'synthetic-owner',kind:'video',model:'synthetic-model',estimatedCredits:null});
+            pool.transitionTask(lease.taskId,{state:'submitting'});
+            pool.rejectTaskForCredits(lease.taskId,'synthetic-owner',primary.id);
+            const next=await pool.retryTaskAfterCreditRejection(lease.taskId,'synthetic-owner',primary.id);
+            if(next.lease?.account.id!==backup.id) throw Error('Credit relay selected an unexpected account');
+            pool.transitionTask(lease.taskId,{state:'submitting'});
+            pool.transitionTask(lease.taskId,{state:'submitted',upstreamTaskId:'synthetic-relay-history'});
+            pool.transitionTask(lease.taskId,{state:'succeeded',result:{kind:'video',urls:['https://fixture.invalid/relay.mp4']}});
+            await pool.settleTask(lease.taskId);
+            return process.send({request:m.request,result:{taskId:lease.taskId,primary:primary.id,backup:backup.id}});
+          }
           if(m.action==='settleLatest') {
             pool.transitionTask(latestTask,{state:'succeeded',result:{synthetic:true}});
             await pool.settleTask(latestTask);
@@ -224,6 +242,22 @@ try {
   await page.locator('#pool-refresh').click();
   await page.waitForFunction(()=>document.getElementById('pool-balance-age').value!=='86401');
   checks.push('真实 HTTP 400 拒绝超限有效期，保留错误草稿且服务端设置和版本不变');
+
+  const relay=await control('creditRelay');
+  await page.locator('#pool-refresh').click();
+  await page.waitForFunction(id=>document.getElementById('pool-tasks').textContent.includes(id),relay.taskId);
+  const relayRow=page.locator('#pool-tasks tr').filter({hasText:relay.taskId});
+  assert.match(await relayRow.innerText(),/积分接力后排 100/);
+  assert.match(await relayRow.innerText(),/已完成/);
+  assert.match(await relayRow.innerText(),/synthetic-relay-history/);
+  assert.match(await page.locator('#pool-events').innerText(),/积分不足拒单/);
+  assert.match(await page.locator('#pool-last-switch').innerText(),/积分接力前排 50 → 积分接力后排 100/);
+  const relayDashboard=await dashboard();
+  assert.equal(relayDashboard.tasks.filter(task=>task.requestId==='credit-relay-ui').length,1);
+  assert.equal(relayDashboard.tasks.find(task=>task.id===relay.taskId).accountId,relay.backup);
+  await page.locator('#pool-tasks').screenshot({path:path.join(root,'credit-relay-task.png')});
+  await page.locator('#pool-events').screenshot({path:path.join(root,'credit-relay-events.png')});
+  checks.push('明确积分拒单后同一任务由 50 分前排切至 100 分后排，后台展示最终账号、完成状态和拒单切换原因');
 
   for(const asset of ['account-pool-ui.js','account-pool-ui.css']) {
     const response=await fetch(base+'/'+asset);

@@ -1,4 +1,4 @@
-import { currentPoolTask } from "../../lib/pool-task-context.ts";
+import { currentPoolTask, runWithPoolCreditRetry } from "../../lib/pool-task-context.ts";
 import { resolvePoolTaskCredential } from "./auth.ts";
 import fs from "fs-extra";
 import path from "path";
@@ -542,7 +542,12 @@ export function extractAudioUrlFromItemList(itemList: any[] = []): string | null
   return null;
 }
 
-export async function generateAudio(
+export async function generateAudio(...args: Parameters<typeof generateAudioForAccount>) {
+  const [options, token, cookie] = args;
+  return runWithPoolCreditRetry(token, cookie, (nextToken, nextCookie) => generateAudioForAccount(options, nextToken, nextCookie));
+}
+
+async function generateAudioForAccount(
   {
     prompt,
     model = "jimeng-audio-seedaudio-1.0",

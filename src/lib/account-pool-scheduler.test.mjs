@@ -168,6 +168,76 @@ test('accounts preserve manual ordering and input balances in scheduling view', 
   f.db.close();
 });
 
+test('an 80-credit quote skips a 50-credit account and reserves the 100-credit backup', async t => {
+  const f = fixture(); t.after(() => f.db.close());
+  f.add('primary',50); f.add('backup',100);
+  f.scheduler.updateSettings({...f.scheduler.getSettings(),threshold:40});
+  const lease = await f.scheduler.acquireTask(input('known-cost',80));
+  assert.equal(lease.account.id,'backup');
+  assert.equal(f.scheduler.getDashboard().accounts.find(account => account.id === 'backup').scheduling.availableCredits,20);
+  assert.equal(f.scheduler.readTask(lease.taskId,'caller-a-hash').estimatedCredits,80);
+});
+
+test('credit rejection reassigns the same task once per subject and persists exhausted decisions', async t => {
+  const f = fixture(); t.after(() => f.db.close());
+  f.add('a',50); f.add('a-peer',50); f.add('b',100);
+  const identity = JSON.stringify({verified:true,userId:'same-a'});
+  f.db.prepare('UPDATE jimeng_accounts SET identity_json=? WHERE id IN (?,?)').run(identity,'a','a-peer');
+  f.scheduler.updateSettings({...f.scheduler.getSettings(),threshold:40});
+  const lease = await f.scheduler.acquireTask(input('relay',null));
+  f.scheduler.transitionTask(lease.taskId,{state:'submitting'});
+  assert.throws(() => f.scheduler.rejectTaskForCredits(lease.taskId,'foreign','a'), /无权/);
+  f.scheduler.rejectTaskForCredits(lease.taskId,'caller-a-hash','a');
+  assert.equal(f.scheduler.getDashboard().summary.activeTaskCount,0);
+  const next = await f.scheduler.retryTaskAfterCreditRejection(lease.taskId,'caller-a-hash','a');
+  assert.equal(next.lease.taskId,lease.taskId); assert.equal(next.lease.account.id,'b');
+  assert.equal(f.scheduler.listTasks().total,1);
+  await assert.rejects(() => f.scheduler.retryTaskAfterCreditRejection(lease.taskId,'caller-a-hash','a'), /明确积分拒单记录/);
+  f.scheduler.transitionTask(lease.taskId,{state:'submitting'});
+  f.scheduler.rejectTaskForCredits(lease.taskId,'caller-a-hash','b');
+  const exhausted = await f.scheduler.retryTaskAfterCreditRejection(lease.taskId,'caller-a-hash','b');
+  assert.equal(exhausted.lease,null); assert.equal(exhausted.code,'insufficient_credits_exhausted');
+  const replay = await f.scheduler.acquireTask(input('relay',null));
+  assert.equal(replay.reused,true); assert.equal(replay.state,'failed');
+  assert.equal(f.scheduler.getDashboard().summary.activeTaskCount,0);
+});
+
+test('fixed policy, asset affinity, and acknowledged or unknown submissions prevent reassignment', async t => {
+  for (const policy of ['fixed','asset','accepted','unknown']) await t.test(policy, async () => {
+    const f = fixture();
+    try {
+      f.add('a',500); f.add('b',500);
+      f.scheduler.updateSettings({...f.scheduler.getSettings(),mode:policy === 'fixed' ? 'fixed':'auto',fixedAccountId:policy === 'fixed' ? 'a':null});
+      const lease = await f.scheduler.acquireTask(input(policy,null,policy === 'asset' ? {preferredAccountId:'a'}:{}));
+      f.scheduler.transitionTask(lease.taskId,{state:'submitting'});
+      if (policy === 'accepted' || policy === 'unknown') {
+        f.scheduler.transitionTask(lease.taskId,{state:policy === 'accepted' ? 'submitted':'unknown',...(policy === 'accepted' ? {upstreamTaskId:'accepted-id'}:{})});
+        assert.throws(() => f.scheduler.rejectTaskForCredits(lease.taskId,'caller-a-hash','a'), /无法按积分拒单/);
+        assert.equal(f.scheduler.readTask(lease.taskId,'caller-a-hash').accountId,'a');
+      } else {
+        f.scheduler.rejectTaskForCredits(lease.taskId,'caller-a-hash','a');
+        const stopped = await f.scheduler.retryTaskAfterCreditRejection(lease.taskId,'caller-a-hash','a');
+        assert.equal(stopped.lease,null);
+        assert.equal(stopped.code,policy === 'fixed' ? 'fixed_account_insufficient':'reference_account_bound');
+      }
+    } finally { f.db.close(); }
+  });
+});
+
+test('reassignment respects the original candidate bound and concurrent account occupancy', async t => {
+  const f = fixture(); t.after(() => f.db.close());
+  f.add('a',500); f.add('b',500);
+  const rejected = await f.scheduler.acquireTask(input('rejected',null));
+  const busy = await f.scheduler.acquireTask(input('busy',null));
+  f.add('later-account',1000);
+  f.scheduler.transitionTask(rejected.taskId,{state:'submitting'});
+  f.scheduler.rejectTaskForCredits(rejected.taskId,'caller-a-hash','a');
+  const decision = await f.scheduler.retryTaskAfterCreditRejection(rejected.taskId,'caller-a-hash','a');
+  assert.equal(decision.lease,null); assert.equal(decision.code,'no_executable_account');
+  assert.equal(f.scheduler.readTask(busy.taskId,'caller-a-hash').accountId,'b');
+  assert.equal(f.scheduler.getDashboard().summary.activeTaskCount,1);
+});
+
 test('readTaskForRecovery returns task, ownerHash and selection across disabled account and checks credential version', async () => {
   const f = fixture(); f.add('a', 500);
   const lease = await f.scheduler.acquireTask(input('rec', 80));

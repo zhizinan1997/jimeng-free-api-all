@@ -10,10 +10,11 @@ export function poolTaskErrorPayload(error: any, context?: TaskContext) {
     statusCode: insufficient ? 422 : invalidParams ? 400 : 502,
     body: {
       error: {
-        message: insufficient ? '即梦积分不足，未降低参数或切换账号重试'
+        message: insufficient ? (context.creditRetryMessage || '即梦积分不足以执行当前任务')
           : invalidParams ? (error?.errmsg || '请求参数无效')
           : '任务未完成；保留原任务归属，请查询状态，不要更换请求标识重提',
         code: insufficient ? 'insufficient_credits' : invalidParams ? 'invalid_request' : 'pool_task_incomplete',
+        ...(insufficient && context.creditRetryCode ? { reason: context.creditRetryCode } : {}),
       },
       pool_task_id: context.taskId,
       request_id: context.requestId,

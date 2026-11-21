@@ -6,7 +6,7 @@
   const accountName = (id) => pool.snapshot?.accounts.find((a) => a.id === id)?.name || id || '—';
   const states = { reserved: '已预占', submitting: '等待上游回执', submitted: '已提交', running: '运行中', succeeded: '已完成', failed: '失败', unknown: '提交待确认', settling: '结算待确认' };
   const kinds = { image: '图片', video: '视频', audio: '音频', text: '文本', upload: '素材上传' };
-  const eventNames = { settings_updated: '设置更新', order_updated: '排序更新', account_selected: '任务选号', account_switched: '实际账号切换', task_acquired: '任务绑定', task_reserved: '任务预占', task_transition: '任务状态更新', task_state: '任务状态更新', task_settled: '任务结算', balance_settled: '余额结算释放', balance_refreshed: '余额刷新', balance_refresh_failed: '余额刷新失败', account_created: '添加账号', account_updated: '账号更新', credential_updated: '更新凭据', account_enabled: '启用账号', account_disabled: '停用账号', account_deleted: '删除账号' };
+  const eventNames = { credits_rejected: '积分不足拒单', credit_retry_stopped: '换号接力结束', settings_updated: '设置更新', order_updated: '排序更新', account_selected: '任务选号', account_switched: '实际账号切换', task_acquired: '任务绑定', task_reserved: '任务预占', task_transition: '任务状态更新', task_state: '任务状态更新', task_settled: '任务结算', balance_settled: '余额结算释放', balance_refreshed: '余额刷新', balance_refresh_failed: '余额刷新失败', account_created: '添加账号', account_updated: '账号更新', credential_updated: '更新凭据', account_enabled: '启用账号', account_disabled: '停用账号', account_deleted: '删除账号' };
   const tag = (text, style = 'muted') => `<span class="badge badge-${style}">${h(text)}</span>`;
   const detail = (text, style = '') => `<div class="pool-detail ${style}">${h(text)}</div>`;
   function identityBlock(identity, membership) {
