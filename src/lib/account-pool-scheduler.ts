@@ -14,6 +14,10 @@ export interface PoolEvent { id: string; type: string; accountId: string | null;
 export interface AcquireTaskInput { requestId: string; ownerHash: string; requestFingerprint: string; kind: PoolTaskKind; model: string; estimatedCredits: number | null; requestedImageCount?: number; preferredAccountId?: string }
 export interface PoolLease extends AccountSelection { taskId: string; reused: boolean; state: PoolTaskState; upstreamTaskId: string | null }
 export interface CreditRetryDecision { lease: PoolLease | null; code?: string; message?: string }
+export interface ResolveTaskInput {
+  expectedState: PoolTaskState; expectedUpdatedAt: string; expectedAccountId: string;
+  confirmation: 'upstream_not_created_or_failed' | 'balance_reconciliation';
+}
 export interface PoolTaskRecoveryRecord { task: PoolTask; ownerHash: string; selection: AccountSelection }
 export class PoolError extends Error {
   statusCode: number;
@@ -23,6 +27,10 @@ export class PoolError extends Error {
 const ACK_WAIT_MS = 120_000;
 const stamp = () => new Date().toISOString();
 const terminal = (state: string) => state === 'succeeded' || state === 'failed';
+const isZeroCostOperation = (kind: string | undefined, estimate: number | null) =>
+  (kind === 'text' || kind === 'upload') && estimate === 0;
+// Zero-cost operations keep ownership/idempotency leases, but reserve no media credits.
+const creditBearingSql = "NOT (kind IN ('text','upload') AND estimated_credits IS 0)";
 const json = (value: string, fallback: any) => { try { return JSON.parse(value); } catch { return fallback; } };
 interface Dependencies {
   db: any; publicAccount(row: any): PublicAccount; selection(id: string): AccountSelection;
@@ -148,14 +156,20 @@ export function createPoolScheduler(deps: Dependencies) {
   }
   function occupancyForIds(peerIds: string[]) {
     const placeholders = peerIds.map(() => '?').join(',');
-    return db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(estimated_credits),0) AS reserved, SUM(CASE WHEN estimated_credits IS NULL THEN 1 ELSE 0 END) AS unknown_count FROM pool_tasks WHERE account_id IN (${placeholders}) AND held=1`).get(...peerIds);
+    return db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(estimated_credits),0) AS reserved,
+      COALESCE(SUM(CASE WHEN ${creditBearingSql} THEN 1 ELSE 0 END),0) AS credit_count,
+      SUM(CASE WHEN estimated_credits IS NULL THEN 1 ELSE 0 END) AS unknown_count
+      FROM pool_tasks WHERE account_id IN (${placeholders}) AND held=1`).get(...peerIds);
   }
-  function eligibility(r: any, estimate: number | null = 0, model = '', allRows?: any[]) {
+  function eligibility(r: any, estimate: number | null = 0, model = '', allRows?: any[], kind?: PoolTaskKind) {
     const all = allRows || rows();
     const peers = subjectPeers(r, all), peerIds = peers.map((p: any) => p.id), primaryEnabled = peers.find((p: any) => p.enabled);
     const occupied = occupancyForIds(peerIds), settings = getSettings();
     const fresh = Number.isFinite(Date.parse(r.status_checked_at)) && Date.now() - Date.parse(r.status_checked_at) <= settings.balanceMaxAgeSeconds * 1000;
+    const zeroCost = isZeroCostOperation(kind, estimate);
+    const heldStaleAllowed = zeroCost && occupied.credit_count > 0 && Number.isFinite(r.total_credit) && !r.status_error && Boolean(r.status_checked_at);
     const available = Number.isFinite(r.total_credit) && fresh && !r.status_error ? r.total_credit - occupied.reserved : null;
+    const effectiveAvailable = available ?? (heldStaleAllowed ? r.total_credit - occupied.reserved : null);
     let reason = '可接收新任务';
     if (!r.enabled) reason = '账号已停用';
     else if (primaryEnabled && primaryEnabled.id !== r.id) {
@@ -163,18 +177,18 @@ export function createPoolScheduler(deps: Dependencies) {
       reason = sameUid ? `与排在前面的账号「${primaryEnabled.name}」为同一上游身份，已禁止重复参与调度` : `与排在前面的账号「${primaryEnabled.name}」为同一会话凭据，已禁止重复参与调度`;
     }
     else if (r.status_error) reason = '余额或凭据校验失败';
-    else if (!Number.isFinite(r.total_credit) || !fresh) reason = '余额未知或已过期';
+    else if (!Number.isFinite(r.total_credit) || (!fresh && !heldStaleAllowed)) reason = '余额未知或已过期';
     else if (r.cooldown_until && Date.parse(r.cooldown_until) > Date.now()) reason = '账号冷却中';
     else if (peers.some((p: any) => p.calibration_token && p.calibration_until > Date.now())) reason = '余额校准中';
-    else if (occupied.unknown_count || (estimate === null && occupied.count)) reason = '未知费用任务需要独占账号';
-    else if (db.prepare(`SELECT 1 FROM pool_tasks WHERE account_id IN (${peerIds.map(() => '?').join(',')}) AND held=1 AND state IN ('succeeded','failed','unknown') LIMIT 1`).get(...peerIds)) reason = '存在待确认或待结算任务';
-    else if (available! < settings.threshold) reason = '可用积分低于接单门槛';
-    else if (estimate !== null && available! < estimate) reason = '可用积分不足预估费用';
+    else if (!zeroCost && (occupied.unknown_count || (estimate === null && occupied.credit_count))) reason = '未知费用任务需要独占账号';
+    else if (!zeroCost && db.prepare(`SELECT 1 FROM pool_tasks WHERE account_id IN (${peerIds.map(() => '?').join(',')}) AND held=1 AND ${creditBearingSql} AND state IN ('succeeded','failed','unknown') LIMIT 1`).get(...peerIds)) reason = '存在待确认或待结算任务';
+    else if (effectiveAvailable! < settings.threshold) reason = '可用积分低于接单门槛';
+    else if (estimate !== null && effectiveAvailable! < estimate) reason = '可用积分不足预估费用';
     else {
       const membership = json(r.membership_json, {});
       // Only explicit provider evidence can deny/allow a restricted model; local account notes are not proof.
       if (model && Array.isArray(membership?.supportedModels) && !membership.supportedModels.includes(model)) reason = '账号权益不支持该模型';
-      else if (model && /(?:^|[-_])vip(?:$|[-_])/i.test(model) && membership?.isVip !== true && membership?.isVip !== 1) reason = '该模型所需会员权益未核验';
+      else if (model && /(?:^|[-_])vip(?:$|[-_])/i.test(model) && (membership?.isVip === false || membership?.isVip === 0)) reason = '该模型所需会员权益未核验';
       else if (Number.isInteger(membership?.maxConcurrentTasks) && occupied.count >= membership.maxConcurrentTasks) reason = '已达账号并发限制';
       else { try { deps.selection(r.id); } catch { reason = '账号凭据不可解密或不可用'; } }
     }
@@ -196,13 +210,20 @@ export function createPoolScheduler(deps: Dependencies) {
       : { verified: false, userId: null, displayName: null, checkedAt: null, refreshFailed: false, refreshError: null };
     return { ...deps.publicAccount(r), priority: r.priority, upstreamIdentity, scheduling: eligibility(r, 0, '', allRows) };
   }
-  function candidate(estimate: number | null = 0, model = '', preferred?: string) {
+  function candidate(estimate: number | null = 0, model = '', preferred?: string, kind?: PoolTaskKind) {
     const settings = getSettings(), all = rows();
     // Proven material/session affinity overrides a policy change, but does not bypass new-task admission.
     const id = preferred || (settings.mode === 'fixed' ? settings.fixedAccountId : null);
     const candidates = id ? [row(id)] : all;
-    const found = candidates.find((r: any) => eligibility(r, estimate, model, all).eligible);
-    if (!found) throw new PoolError(id ? `指定账号不合格：${eligibility(candidates[0], estimate, model, all).reason}` : '没有符合条件的即梦账号', 409);
+    const found = candidates.find((r: any) => eligibility(r, estimate, model, all, kind).eligible);
+    if (!found) {
+      if (id) throw new PoolError(`指定账号不合格：${eligibility(candidates[0], estimate, model, all, kind).reason}`, 409);
+      const summary = all.length === 0
+        ? '账号池为空'
+        : all.slice(0, 6).map((r: any) => `${r.name || r.id}：${eligibility(r, estimate, model, all, kind).reason}`).join('；')
+          + (all.length > 6 ? `；另有 ${all.length - 6} 个账号不合格` : '');
+      throw new PoolError(`没有符合条件的即梦账号（${summary}）`, 409);
+    }
     return found;
   }
   function toTask(t: any): PoolTask { return { id: t.id, requestId: t.request_id, accountId: t.account_id, accountName: t.account_name, kind: t.kind, model: t.model, ...(t.kind === 'image' ? { requestedImageCount: t.requested_image_count } : {}), state: t.state, estimatedCredits: t.estimated_credits, upstreamTaskId: t.upstream_task_id, createdAt: t.created_at, updatedAt: t.updated_at, error: t.error, settling: Boolean(t.held && terminal(t.state)) }; }
@@ -241,7 +262,7 @@ export function createPoolScheduler(deps: Dependencies) {
     return db.transaction(() => {
       const old = db.prepare('SELECT * FROM pool_tasks WHERE owner_hash=? AND request_id=?').get(input.ownerHash, input.requestId);
       if (old) return replay(old, input);
-      const selected = candidate(input.estimatedCredits, input.model, input.preferredAccountId), timestamp = stamp(), id = crypto.randomUUID();
+      const selected = candidate(input.estimatedCredits, input.model, input.preferredAccountId, input.kind), timestamp = stamp(), id = crypto.randomUUID();
       const previous = db.prepare("SELECT account_id FROM pool_tasks ORDER BY rowid DESC LIMIT 1").get();
       db.prepare('INSERT INTO pool_tasks (id, request_id, owner_hash, fingerprint, account_id, account_name, credential_version, kind, model, state, estimated_credits, requested_image_count, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, input.requestId, input.ownerHash, input.requestFingerprint, selected.id, selected.name, selected.credential_version, input.kind, input.model, 'reserved', input.estimatedCredits, input.requestedImageCount ?? null, timestamp, timestamp);
       db.prepare('UPDATE pool_tasks SET retry_mode=?, preferred_account_id=?, retry_accounts_json=? WHERE id=?')
@@ -327,8 +348,8 @@ export function createPoolScheduler(deps: Dependencies) {
     const token = db.transaction(() => {
       const peers = subjectPeers(row(id));
       const peerIds = peers.map((p: any) => p.id);
-      const active = db.prepare(`SELECT 1 FROM pool_tasks WHERE account_id IN (${peerIds.map(() => '?').join(',')}) AND held=1 AND state NOT IN ('succeeded','failed') LIMIT 1`).get(...peerIds);
-      if (active || (!settling && occupancyForIds(peerIds).count)) throw new PoolError('账号有未结算任务，暂缓余额刷新', 409);
+      const active = db.prepare(`SELECT 1 FROM pool_tasks WHERE account_id IN (${peerIds.map(() => '?').join(',')}) AND held=1 AND ${creditBearingSql} AND state NOT IN ('succeeded','failed') LIMIT 1`).get(...peerIds);
+      if (active || (!settling && occupancyForIds(peerIds).credit_count)) throw new PoolError('账号有未结算任务，暂缓余额刷新', 409);
       if (peers.some((p: any) => p.id !== id && p.calibration_token && p.calibration_until > Date.now())) throw new PoolError('同上游账号余额正在校准', 409);
       return lockRefresh(id);
     }).immediate();
@@ -367,7 +388,38 @@ export function createPoolScheduler(deps: Dependencies) {
   async function settleTask(id: string): Promise<void> {
     const t = task(id); if (!t.held) return;
     if (!terminal(t.state)) throw new PoolError('待确认或进行中的任务不能释放预占', 409);
+    if (isZeroCostOperation(t.kind, t.estimated_credits)) {
+      db.transaction(() => {
+        const changed = db.prepare("UPDATE pool_tasks SET held=0, updated_at=? WHERE id=? AND held=1 AND state IN ('succeeded','failed')").run(stamp(), id);
+        if (changed.changes) event('task_settled', t.account_id, `零费${t.kind === 'text' ? '文本' : '上传'}任务已结束并释放操作占位`);
+      }).immediate();
+      return;
+    }
     await calibrate(t.account_id, true);
+  }
+  async function resolveStuckTask(id: string, input: ResolveTaskInput, actor?: string): Promise<PoolTask> {
+    if (!input || typeof input.expectedUpdatedAt !== 'string' || !input.expectedUpdatedAt ||
+      typeof input.expectedAccountId !== 'string' || !input.expectedAccountId || typeof input.expectedState !== 'string' ||
+      !['upstream_not_created_or_failed', 'balance_reconciliation'].includes(input.confirmation)) {
+      throw new PoolError('必须提交当前任务版本、所属账号和上游核对确认');
+    }
+    db.transaction(() => {
+      const current = task(id);
+      if (!current.held) throw new PoolError('该任务已释放占位，无需重复处理', 409);
+      if (current.state !== input.expectedState || current.updated_at !== input.expectedUpdatedAt || current.account_id !== input.expectedAccountId) {
+        throw new PoolError('任务状态或所属账号已变化，请刷新并重新核对', 409);
+      }
+      if (current.state === 'unknown' && !current.upstream_task_id && input.confirmation === 'upstream_not_created_or_failed') {
+        db.prepare("UPDATE pool_tasks SET state='failed', error=?, updated_at=? WHERE id=?").run('管理员核对上游后手动释放占位', stamp(), id);
+        event('task_resolved', current.account_id, `任务 ${id} 管理员确认上游未创建或已失败，标记失败并尝试结算`, null, null, actor);
+      } else if (terminal(current.state) && input.confirmation === 'balance_reconciliation') {
+        event('task_resolved', current.account_id, `任务 ${id} 触发手动结算释放占位`, null, null, actor);
+      } else {
+        throw new PoolError('仅可核对释放无上游 ID 的待确认任务，或重试已结束任务的结算；进行中及已有上游 ID 的任务须沿原账号查询', 409);
+      }
+    }).immediate();
+    await settleTask(id);
+    return toTask(task(id));
   }
   async function refreshAccount(id: string, actor?: string) { await calibrate(id, false, actor); return publicAccount(row(id), rows()); }
   async function refreshStaleAccounts(preferred?: string): Promise<void> {
@@ -381,7 +433,7 @@ export function createPoolScheduler(deps: Dependencies) {
       const peers = subjectPeers(current, latestAll);
       const primaryEnabled = peers.find((p: any) => p.enabled);
       if (!id && primaryEnabled && primaryEnabled.id !== current.id) continue;
-      if (occupancyForIds(peers.map((p: any) => p.id)).count || (current.cooldown_until && Date.parse(current.cooldown_until) > Date.now())) continue;
+      if (occupancyForIds(peers.map((p: any) => p.id)).credit_count || (current.cooldown_until && Date.parse(current.cooldown_until) > Date.now())) continue;
       if (!current.status_error && current.status_checked_at && Date.now() - Date.parse(current.status_checked_at) <= settings.balanceMaxAgeSeconds * 1000) continue;
       try { await refreshAccount(current.id); } catch { /* Failed refresh remains explicitly ineligible; admission fails closed. */ }
     }
@@ -398,6 +450,12 @@ export function createPoolScheduler(deps: Dependencies) {
   function scanTasksForMaintenance(now = Date.now()): PoolTask[] {
     const cutoff = new Date(now - ACK_WAIT_MS).toISOString();
     db.transaction(() => {
+      const abandonedReserved = db.prepare(`UPDATE pool_tasks SET state='failed', updated_at=?, error=?
+        WHERE held=1 AND state='reserved' AND upstream_task_id IS NULL AND updated_at<=?
+        RETURNING id, account_id`).all(new Date(now).toISOString(), '提交前超时或进程中断，未向上游提交', cutoff);
+      for (const abandoned of abandonedReserved) {
+        event('task_state', abandoned.account_id, `任务 ${abandoned.id} 长期停留在预占状态，自动转为失败待结算`);
+      }
       const expired = db.prepare(`UPDATE pool_tasks SET state='unknown', updated_at=?, error=?
         WHERE held=1 AND state='submitting' AND upstream_task_id IS NULL AND updated_at<=?
         RETURNING id, account_id`).all(new Date(now).toISOString(), '尚未收到上游回执，请用原账号核对', cutoff);
@@ -425,7 +483,7 @@ export function createPoolScheduler(deps: Dependencies) {
     const reasons: Record<string, string> = { account_created: '新增账号', account_updated: '更新账号备注或配置', credential_updated: '更换凭据并清除旧余额及身份核验', account_enabled: '启用账号接收新任务', account_disabled: '停用新派发，保留已绑定任务', account_deleted: '删除无未结算任务的账号' };
     event(type, id, reasons[type] || '账号管理配置已更新', null, null, actor);
   }
-  return { getSettings, updateSettings, reorderAccounts, getDashboard, listTasks, listEvents, acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskForRecovery,
+  return { getSettings, updateSettings, reorderAccounts, getDashboard, listTasks, listEvents, acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, resolveStuckTask, readTask, readTaskCredential, readTaskForRecovery,
     readTaskResult: (id: string, owner: string) => {
       const t = owned(id, owner);
       const result = t.result_ciphertext ? JSON.parse(deps.decrypt(t.result_ciphertext)) : null;

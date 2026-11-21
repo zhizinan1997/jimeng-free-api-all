@@ -571,6 +571,61 @@ try {
   );
   fs.unlinkSync(path.join(root, 'fail-identity-sessions.json'));
   checks.push('身份端点暂时失败时 UI 标黄提示“身份为上次核验 · 本次刷新失败”并展示上次尝试与失败原因，不误导绿标、不改写合法余额且继续保留同 userId 排重关联');
+
+  // Exercise the real manual-resolution button, not just its presence in HTML.
+  page.removeAllListeners('dialog');
+  const runPoolSource = source => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { pathToFileURL } from 'node:url';
+      const { pool } = await import(pathToFileURL(${JSON.stringify(seedBundle)}).href);
+      ${source}
+    `], { cwd: root, env: sharedServerEnv(port), encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  };
+  runPoolSource(`
+    const unknown = await pool.acquireTask({requestId:'manual-ui-unknown',ownerHash:'ui-int-owner',requestFingerprint:'manual-ui-unknown',kind:'video',model:'jimeng-video-3.0',estimatedCredits:null,preferredAccountId:${JSON.stringify(zetaId)}});
+    pool.transitionTask(unknown.taskId,{state:'submitting'});
+    pool.transitionTask(unknown.taskId,{state:'unknown'});
+    const live = await pool.acquireTask({requestId:'manual-ui-live',ownerHash:'ui-int-owner',requestFingerprint:'manual-ui-live',kind:'upload',model:'upload',estimatedCredits:0,preferredAccountId:${JSON.stringify(zetaId)}});
+    pool.transitionTask(live.taskId,{state:'submitting'});
+    pool.transitionTask(live.taskId,{state:'running',upstreamTaskId:'still-running'});
+  `);
+  await page.locator('#pool-refresh').click();
+  const unknownRow = page.locator('#pool-tasks tr').filter({ hasText: 'manual-ui-unknown' });
+  const liveRow = page.locator('#pool-tasks tr').filter({ hasText: 'manual-ui-live' });
+  await unknownRow.locator('[data-action="resolve-task"]').waitFor();
+  assert.equal(await liveRow.locator('[data-action="resolve-task"]').count(), 0);
+  const resolveCalls = () => apiCalls.filter(c => c.method === 'POST' && c.path.endsWith('/resolve')).length;
+  const beforeCancel = resolveCalls();
+  page.once('dialog', dialog => dialog.dismiss());
+  await unknownRow.locator('[data-action="resolve-task"]').click();
+  assert.equal(resolveCalls(), beforeCancel);
+  page.once('dialog', async dialog => { assert.match(dialog.message(), /未创建任务或任务已失败\/取消/); await dialog.accept(); });
+  await unknownRow.locator('[data-action="resolve-task"]').click();
+  await page.waitForFunction(() => document.getElementById('pool-message').textContent.includes('任务占位已核对释放'));
+  assert.equal(await unknownRow.locator('[data-action="resolve-task"]').count(), 0);
+  assert.match(await unknownRow.innerText(), /失败/);
+  assert.match(await liveRow.innerText(), /运行中/);
+  checks.push('真实核对释放按钮：取消不提交、明确核对后释放无 ID unknown，运行中任务无释放按钮且保持归属');
+
+  // A late receipt wins against a stale page's confirmation.
+  const deltaUnknownRow = page.locator('#pool-tasks tr').filter({ hasText: 'active-unknown-req' });
+  await deltaUnknownRow.locator('[data-action="resolve-task"]').waitFor();
+  runPoolSource(`
+    const task=pool.listTasks(200,0).items.find(t=>t.requestId==='active-unknown-req');
+    pool.transitionTask(task.id,{state:'submitted',upstreamTaskId:'late-ui-receipt'});
+  `);
+  allowExpectedHttpErrorLog = true;
+  page.once('dialog', dialog => dialog.accept());
+  await deltaUnknownRow.locator('[data-action="resolve-task"]').click();
+  await page.waitForFunction(() => document.getElementById('pool-message').textContent.includes('任务状态或所属账号已变化'));
+  allowExpectedHttpErrorLog = false;
+  await page.locator('#pool-refresh').click();
+  await page.waitForFunction(() => document.getElementById('pool-tasks').textContent.includes('late-ui-receipt'));
+  assert.equal(await deltaUnknownRow.locator('[data-action="resolve-task"]').count(), 0);
+  assert.match(await deltaUnknownRow.innerText(), /已提交/);
+  checks.push('真实页面过期确认返回409，刷新后保留迟到回执、上游 ID 和原账号，按钮消失');
+  await page.screenshot({ path: path.join(evidenceDir, 'manual-resolution-real.png'), fullPage: true });
   await page.screenshot({ path: path.join(evidenceDir, 'desktop-real.png'), fullPage: true });
 
   // 11. 390px narrow viewport responsive check

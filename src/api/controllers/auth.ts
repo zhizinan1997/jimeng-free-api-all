@@ -39,7 +39,7 @@ export async function resolveAuthorization(authorization: string, imageCount = D
       const lease = await pool.acquireTask({ requestId: context.requestId, ownerHash: owner,
         requestFingerprint: context.requestFingerprint, kind: context.kind, model: context.model,
         ...(context.kind === "image" ? { requestedImageCount: imageCount } : {}),
-        estimatedCredits: null, ...(proof ? { preferredAccountId: proof } : {}) });
+        estimatedCredits: context.kind === "text" || context.kind === "upload" ? 0 : null, ...(proof ? { preferredAccountId: proof } : {}) });
       if (lease.reused) {
         let storedResult: unknown = null;
         if (lease.state === 'succeeded') {

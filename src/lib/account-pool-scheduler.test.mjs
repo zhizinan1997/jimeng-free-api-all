@@ -22,6 +22,10 @@ function fixture(file = ':memory:') {
 }
 const input = (id, estimate = 80, extra = {}) => ({ requestId: id, ownerHash: 'caller-a-hash', requestFingerprint: `fingerprint-${id}`, kind: 'image', model: 'standard', estimatedCredits: estimate, ...extra });
 function finish(s, lease) { s.transitionTask(lease.taskId, { state: 'submitting' }); s.transitionTask(lease.taskId, { state: 'succeeded', result: { url: 'private-result' } }); }
+function resolution(s, id, confirmation = 'upstream_not_created_or_failed') {
+  const t = s.readTask(id, 'caller-a-hash');
+  return { expectedState: t.state, expectedUpdatedAt: t.updatedAt, expectedAccountId: t.accountId, confirmation };
+}
 
 test('only overdue unacknowledged sends become unknown and a late receipt settles the same lease', async () => {
   const f = fixture();
@@ -321,4 +325,153 @@ test('settle atomically syncs same-subject peer balance and enforces 200 thresho
   assert.equal(peerCAlone.scheduling.eligible, false);
   assert.match(peerCAlone.scheduling.reason, /余额未知或已过期/);
   f.db.close();
+});
+
+test('unknown membership allows -vip models while explicit non-vip rejects', async () => {
+  const f = fixture(); f.add('unk', 500); f.add('nonvip', 500);
+  f.db.prepare('UPDATE jimeng_accounts SET membership_json=? WHERE id=?').run(JSON.stringify('unknown'), 'unk');
+  f.db.prepare('UPDATE jimeng_accounts SET membership_json=? WHERE id=?').run(JSON.stringify({ isVip: false }), 'nonvip');
+  const vipLease = await f.scheduler.acquireTask(input('vip-unk', 50, { kind: 'video', model: 'jimeng-video-seedance-2.0-vip' }));
+  assert.equal(vipLease.account.id, 'unk');
+  finish(f.scheduler, vipLease); await f.scheduler.settleTask(vipLease.taskId);
+  f.db.prepare('UPDATE jimeng_accounts SET enabled=0 WHERE id=?').run('unk');
+  await assert.rejects(
+    f.scheduler.acquireTask(input('vip-nonvip', 50, { kind: 'video', model: 'jimeng-video-seedance-2.0-fast-vip' })),
+    err => err.statusCode === 409 && /没有符合条件的即梦账号（.*nonvip：该模型所需会员权益未核验/.test(err.message)
+  );
+  f.db.close();
+});
+
+test('free text tasks are not blocked by unknown-cost media occupancy and stale held cache', async () => {
+  const f = fixture(); f.add('a', 500); f.add('b', 100);
+  f.db.prepare('UPDATE jimeng_accounts SET enabled=0 WHERE id=?').run('b');
+  const mediaLease = await f.scheduler.acquireTask(input('media-1', null, { kind: 'video', model: 'jimeng-video-seedance-2.0' }));
+  assert.equal(mediaLease.account.id, 'a');
+  f.db.prepare("UPDATE jimeng_accounts SET status_checked_at='2000-01-01T00:00:00.000Z' WHERE id='a'").run();
+  // Paid/media requests still fail closed with per-account reason summary.
+  await assert.rejects(
+    f.scheduler.acquireTask(input('media-2', 0, { kind: 'image', model: 'jimeng-image-5.0-lite' })),
+    err => err.statusCode === 409 && /没有符合条件的即梦账号（a：余额未知或已过期；b：账号已停用）/.test(err.message)
+  );
+  // Free text chat can still use the account while media holds it.
+  const textLease = await f.scheduler.acquireTask(input('text-1', 0, { kind: 'text', model: 'doubao-2.1-lite' }));
+  assert.equal(textLease.account.id, 'a');
+  f.db.close();
+});
+
+test('stale reserved tasks auto-fail in maintenance and resolveStuckTask frees unknown occupancy', async () => {
+  const f = fixture(); f.add('a', 500);
+  const staleReserved = await f.scheduler.acquireTask(input('stale-res', null, { kind: 'video' }));
+  const oldStamp = new Date(Date.now() - 180_000).toISOString();
+  f.db.prepare('UPDATE pool_tasks SET updated_at=? WHERE id=?').run(oldStamp, staleReserved.taskId);
+  const recoverable = f.scheduler.scanTasksForMaintenance(Date.now());
+  assert.equal(recoverable.find(t => t.id === staleReserved.taskId)?.state, 'failed');
+  assert.throws(() => f.scheduler.transitionTask(staleReserved.taskId, { state: 'submitting' }), /不允许/);
+  await f.scheduler.settleTask(staleReserved.taskId);
+
+  const stuckUnknown = await f.scheduler.acquireTask(input('stuck-unk', null, { kind: 'video' }));
+  f.scheduler.transitionTask(stuckUnknown.taskId, { state: 'submitting' });
+  f.scheduler.transitionTask(stuckUnknown.taskId, { state: 'unknown' });
+  assert.equal(f.scheduler.getDashboard().accounts[0].scheduling.unknownCostBusy, true);
+  const resolved = await f.scheduler.resolveStuckTask(stuckUnknown.taskId, resolution(f.scheduler, stuckUnknown.taskId), 'admin:tester');
+  assert.equal(resolved.state, 'failed');
+  assert.equal(resolved.settling, false);
+  assert.equal(f.scheduler.getDashboard().accounts[0].scheduling.unknownCostBusy, false);
+  assert.ok(f.scheduler.listEvents().items.some(e => e.type === 'task_resolved' && e.actor === 'admin:tester'));
+  f.db.close();
+});
+
+test('zero-cost text and uploads do not block media in either admission order or settlement', async () => {
+  const f = fixture(); f.add('a', 500);
+  try {
+    const text = await f.scheduler.acquireTask(input('text-first', 0, { kind: 'text' }));
+    const upload = await f.scheduler.acquireTask(input('upload-first', 0, { kind: 'upload' }));
+    const media = await f.scheduler.acquireTask(input('media-second', null, { kind: 'video' }));
+    const upload2 = await f.scheduler.acquireTask(input('upload-during-media', 0, { kind: 'upload' }));
+    const text2 = await f.scheduler.acquireTask(input('text-during-media', 0, { kind: 'text' }));
+    assert.equal(new Set([text, upload, media, upload2, text2].map(t => t.account.id)).size, 1);
+    // Media remains exclusive against other media, never against zero-cost work.
+    await assert.rejects(f.scheduler.acquireTask(input('other-media', null)), /未知费用/);
+    const calls = f.calls();
+    finish(f.scheduler, text); await f.scheduler.settleTask(text.taskId);
+    assert.equal(f.calls(), calls);
+    assert.equal(f.scheduler.getDashboard().summary.activeTaskCount, 4);
+    assert.throws(() => f.scheduler.assertMutable('a'), /禁止删除/);
+    finish(f.scheduler, media); await f.scheduler.settleTask(media.taskId);
+    assert.equal(f.calls(), calls + 1);
+    assert.equal(f.scheduler.getDashboard().summary.activeTaskCount, 3);
+    // Stale balance can be refreshed with only live zero-cost operations.
+    f.db.prepare("UPDATE jimeng_accounts SET status_checked_at='2000-01-01T00:00:00.000Z' WHERE id='a'").run();
+    const nextMedia = await f.scheduler.acquireTask(input('media-after-settle', null));
+    assert.equal(nextMedia.account.id, 'a');
+    assert.equal(f.calls(), calls + 2);
+  } finally { f.db.close(); }
+});
+
+test('zero-cost work preserves legacy unknown costs and explicit provider concurrency limits', async () => {
+  const f = fixture(); f.add('a', 500);
+  try {
+    const legacy = await f.scheduler.acquireTask(input('legacy-text-unknown', null, { kind: 'text' }));
+    await assert.rejects(f.scheduler.acquireTask(input('media-blocked-by-legacy', null)), /未知费用/);
+    f.db.prepare('UPDATE jimeng_accounts SET membership_json=? WHERE id=?').run(JSON.stringify({ maxConcurrentTasks: 1 }), 'a');
+    await assert.rejects(f.scheduler.acquireTask(input('free-but-provider-limited', 0, { kind: 'upload' })), /已达账号并发限制/);
+    assert.equal(f.scheduler.readTask(legacy.taskId, 'caller-a-hash').estimatedCredits, null);
+  } finally { f.db.close(); }
+});
+
+test('manual release requires confirmation and rejects all active or provider-bound states', async () => {
+  const f = fixture(); f.add('a', 500);
+  try {
+    const lease = await f.scheduler.acquireTask(input('active-release-denied', null));
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, undefined), /核对确认/);
+    for (const state of ['reserved','submitting','submitted','running','unknown']) {
+      if (state !== 'reserved') f.scheduler.transitionTask(lease.taskId, {
+        state, ...(state === 'submitted' ? { upstreamTaskId: 'already-accepted' } : {})
+      });
+      await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, resolution(f.scheduler, lease.taskId), 'admin:tester'), e => e.statusCode === 409);
+      assert.equal(f.db.prepare('SELECT held FROM pool_tasks WHERE id=?').get(lease.taskId).held, 1);
+      assert.equal(f.scheduler.readTask(lease.taskId, 'caller-a-hash').state, state);
+    }
+    assert.equal(f.scheduler.listEvents().items.some(e => e.type === 'task_resolved'), false);
+  } finally { f.db.close(); }
+});
+
+test('late receipt, changed account/version, and simultaneous manual releases fail closed', async () => {
+  const f = fixture(); f.add('a', 500);
+  try {
+    const lease = await f.scheduler.acquireTask(input('release-race', null));
+    f.scheduler.transitionTask(lease.taskId, { state: 'submitting' });
+    f.scheduler.transitionTask(lease.taskId, { state: 'unknown' });
+    const snapshot = resolution(f.scheduler, lease.taskId);
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, { ...snapshot, expectedAccountId: 'old-account' }), /已变化/);
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, { ...snapshot, expectedUpdatedAt: '2000-01-01T00:00:00.000Z' }), /已变化/);
+    f.scheduler.transitionTask(lease.taskId, { state: 'submitted', upstreamTaskId: 'late-receipt' });
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, snapshot), /已变化/);
+    f.scheduler.transitionTask(lease.taskId, { state: 'succeeded', result: { urls: ['https://fixture.invalid/result'] } });
+    const terminalSnapshot = resolution(f.scheduler, lease.taskId, 'balance_reconciliation');
+    const outcomes = await Promise.allSettled([1, 2].map(() => f.scheduler.resolveStuckTask(lease.taskId, terminalSnapshot, 'admin:tester')));
+    // Only one refresh can acquire the calibration lease; no outcome changes success to failure.
+    assert.equal(outcomes.filter(x => x.status === 'fulfilled').length, 1);
+    const after = f.scheduler.readTask(lease.taskId, 'caller-a-hash');
+    assert.equal(after.state, 'succeeded'); assert.equal(after.upstreamTaskId, 'late-receipt'); assert.equal(after.settling, false);
+  } finally { f.db.close(); }
+});
+
+test('manual release retains settling slot on refresh failure and permits confirmed reconciliation retry', async () => {
+  const f = fixture(); f.add('a', 500);
+  try {
+    const lease = await f.scheduler.acquireTask(input('manual-refresh-fails', null));
+    f.scheduler.transitionTask(lease.taskId, { state: 'submitting' });
+    f.scheduler.transitionTask(lease.taskId, { state: 'unknown' });
+    const snapshot = resolution(f.scheduler, lease.taskId);
+    f.failRefresh(true);
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, snapshot, 'admin:tester'), /unavailable/);
+    const after = f.scheduler.readTask(lease.taskId, 'caller-a-hash');
+    assert.equal(after.state, 'failed'); assert.equal(after.settling, true);
+    await assert.rejects(f.scheduler.resolveStuckTask(lease.taskId, snapshot, 'admin:tester'), /已变化/);
+    f.failRefresh(false);
+    const retry = await f.scheduler.resolveStuckTask(lease.taskId, resolution(f.scheduler, lease.taskId, 'balance_reconciliation'), 'admin:tester');
+    assert.equal(retry.state, 'failed'); assert.equal(retry.settling, false);
+    assert.equal((await f.scheduler.acquireTask(input('after-release', null))).account.id, 'a');
+  } finally { f.db.close(); }
 });

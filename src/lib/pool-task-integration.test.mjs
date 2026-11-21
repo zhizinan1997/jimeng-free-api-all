@@ -940,4 +940,48 @@ test('real media entrypoints use A leases, idempotency, disabled-account recover
     }
   });
 
+  await t.test('text requests use 0 credits without blocking and unknown-membership allows -vip models', async () => {
+    const prevFixedId = app.pool.getSettings().fixedAccountId;
+    const acc = app.pool.create({ name: 'vip-unk-acc', cookie: 'sessionid=vip-unk-sess' });
+    app.pool.updateSettings({ ...app.pool.getSettings(), mode: 'fixed', fixedAccountId: acc.id });
+    const oldAdapterFn = axios.defaults.adapter;
+    axios.defaults.adapter = async config => {
+      const url = new URL(config.url);
+      if (url.pathname === '/commerce/v1/benefits/user_credit') {
+        return { status: 200, statusText: 'OK', headers: {}, config, data: { ret: '0', data: { credit: { gift_credit: 0, purchase_credit: 500, vip_credit: 100 } } } };
+      }
+      if (url.pathname === '/passport/account/info/v2') {
+        return { status: 200, statusText: 'OK', headers: {}, config, data: { message: 'success', data: { user_id_str: 'uid-vip-unk', screen_name: 'vip账号' } } };
+      }
+      return oldAdapterFn(config);
+    };
+    try {
+      const refreshed = await app.pool.refreshStatus(acc.id);
+      assert.equal(refreshed.status.membership.isVip, true);
+      const vipRes = await app.videoRoutes.post['/generations'](req({ model: 'jimeng-video-seedance-2.0-vip', prompt: 'vip video ok' }, 'vip-unk-1'));
+      assert.equal(vipRes.data?.[0]?.url, 'https://fixture.invalid/generated.mp4');
+      const videoTask = app.pool.listTasks(50, 0).items.find(x => x.requestId === 'vip-unk-1');
+      assert.equal(videoTask.estimatedCredits, null);
+      assert.equal(videoTask.state, 'succeeded');
+
+      // Even while an unknown-cost media task holds the account, doubao-2.1-lite text request acquires with estimatedCredits=0 (not rejected with 409).
+      const heldLease = await app.pool.acquireTask({ requestId: 'hold-media-1', ownerHash: app.ownerHash(key), requestFingerprint: 'hold-media-1', kind: 'video', model: 'jimeng-video-seedance-2.0', estimatedCredits: null });
+      app.pool.transitionTask(heldLease.taskId, { state: 'submitting' });
+      const textRes = await app.chatRoutes.post['/completions'](req({ model: 'doubao-2.1-lite', messages: [{ role: 'user', content: 'hi' }] }, 'text-conc-1'));
+      // Browser transport is off in this harness, so it passes pool admission (not 409) and hits 503 transport.
+      assert.notEqual(textRes.statusCode, 409);
+      const textTask = app.pool.listTasks(50, 0).items.find(x => x.requestId === 'text-conc-1');
+      assert.equal(textTask.estimatedCredits, 0);
+      app.pool.transitionTask(heldLease.taskId, { state: 'unknown' });
+      const heldTask = app.pool.readTask(heldLease.taskId, app.ownerHash(key));
+      await app.pool.resolveStuckTask(heldLease.taskId, { expectedState: heldTask.state,
+        expectedUpdatedAt: heldTask.updatedAt, expectedAccountId: heldTask.accountId,
+        confirmation: 'upstream_not_created_or_failed' }, 'admin:test');
+      assert.equal(app.pool.get(acc.id).scheduling.unknownCostBusy, false);
+    } finally {
+      axios.defaults.adapter = oldAdapterFn;
+      app.pool.updateSettings({ ...app.pool.getSettings(), mode: 'fixed', fixedAccountId: prevFixedId });
+    }
+  });
+
 });

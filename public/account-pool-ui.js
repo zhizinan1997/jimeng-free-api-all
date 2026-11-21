@@ -1,12 +1,12 @@
 /* Administrator account pool UI. No credential or mock data is stored here. */
 (() => {
-  const pool = { snapshot: null, order: [], revision: null, settingsDirty: false, orderDirty: false, conflict: false, busy: false, loading: false, epoch: 0, dragId: null, pages: { tasks: 0, events: 0 }, totals: { tasks: null, events: null } };
+  const pool = { snapshot: null, order: [], revision: null, settingsDirty: false, orderDirty: false, conflict: false, busy: false, loading: false, epoch: 0, dragId: null, pages: { tasks: 0, events: 0 }, totals: { tasks: null, events: null }, taskRows: new Map() };
   const h = (value) => esc(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const number = (value) => typeof value === 'number' && Number.isFinite(value) ? String(value) : '未知';
   const accountName = (id) => pool.snapshot?.accounts.find((a) => a.id === id)?.name || id || '—';
   const states = { reserved: '已预占', submitting: '等待上游回执', submitted: '已提交', running: '运行中', succeeded: '已完成', failed: '失败', unknown: '提交待确认', settling: '结算待确认' };
   const kinds = { image: '图片', video: '视频', audio: '音频', text: '文本', upload: '素材上传' };
-  const eventNames = { credits_rejected: '积分不足拒单', credit_retry_stopped: '换号接力结束', settings_updated: '设置更新', order_updated: '排序更新', account_selected: '任务选号', account_switched: '实际账号切换', task_acquired: '任务绑定', task_reserved: '任务预占', task_transition: '任务状态更新', task_state: '任务状态更新', task_settled: '任务结算', balance_settled: '余额结算释放', balance_refreshed: '余额刷新', balance_refresh_failed: '余额刷新失败', account_created: '添加账号', account_updated: '账号更新', credential_updated: '更新凭据', account_enabled: '启用账号', account_disabled: '停用账号', account_deleted: '删除账号' };
+  const eventNames = { credits_rejected: '积分不足拒单', credit_retry_stopped: '换号接力结束', settings_updated: '设置更新', order_updated: '排序更新', account_selected: '任务选号', account_switched: '实际账号切换', task_acquired: '任务绑定', task_reserved: '任务预占', task_transition: '任务状态更新', task_state: '任务状态更新', task_settled: '任务结算', task_resolved: '人工核对 / 结算尝试', balance_settled: '余额结算释放', balance_refreshed: '余额刷新', balance_refresh_failed: '余额刷新失败', account_created: '添加账号', account_updated: '账号更新', credential_updated: '更新凭据', account_enabled: '启用账号', account_disabled: '停用账号', account_deleted: '删除账号' };
   const tag = (text, style = 'muted') => `<span class="badge badge-${style}">${h(text)}</span>`;
   const detail = (text, style = '') => `<div class="pool-detail ${style}">${h(text)}</div>`;
   function identityBlock(identity, membership) {
@@ -24,7 +24,8 @@
       attempt ? detail(`上次尝试刷新：${dateText(identity.lastRefreshAttemptAt)}`) : '',
       failed ? detail(`身份刷新失败：${identity.refreshError || '上游身份核验本次刷新失败'}`, 'pool-warning') : '',
       detail(sourceLabel),
-      detail(`会员：${membershipText(membership)}`)
+      detail(`会员：${membershipText(membership)}`),
+      membership?.isVip == null ? detail('会员资格未核验：VIP 模型将交由上游校验', 'pool-warning') : ''
     ].join('');
   }
   function message(text = '', error = false) {
@@ -68,6 +69,9 @@
     document.querySelectorAll('#accounts-table button').forEach((button) => {
       button.disabled = button.dataset.blocked === 'true' || pool.busy || pool.conflict;
     });
+    document.querySelectorAll('#pool-tasks button[data-action="resolve-task"]').forEach((button) => {
+      button.disabled = pool.busy || pool.conflict;
+    });
   }
   function fillSettings(settings) {
     $('pool-mode').value = settings.mode;
@@ -103,7 +107,12 @@
   }
   function renderRecords(kind, items) {
     if (kind === 'tasks') {
-      $('pool-tasks').innerHTML = items.map((t) => `<tr><td class="pool-wrap"><strong>${h(t.id)}</strong><span class="pool-id">请求：${h(t.requestId)}</span></td><td class="pool-wrap">${h(t.accountName || accountName(t.accountId))}<span class="pool-id">${h(t.accountId)}</span></td><td class="pool-wrap">${h(kinds[t.kind] || t.kind)}${detail(t.model || '未提供模型')}</td><td class="pool-wrap">${tag(states[t.state] || t.state, t.state === 'succeeded' ? 'success' : ['unknown', 'failed', 'settling'].includes(t.state) ? 'warn' : 'muted')}${t.settling ? detail('结算待确认 · 占位尚未释放', 'pool-warning') : ''}${detail(`预估积分：${number(t.estimatedCredits)}`)}${t.error ? detail(t.error, 'pool-warning') : ''}</td><td class="pool-wrap">${h(t.upstreamTaskId || (t.state === 'unknown' ? '无上游 ID · 无法据此自动找回' : '尚无上游任务 ID'))}${detail(`创建：${dateText(t.createdAt)}`)}${detail(`更新：${dateText(t.updatedAt)}`)}</td></tr>`).join('') || emptyRow(5, '暂无任务记录');
+      pool.taskRows = new Map(items.map(t => [t.id, t]));
+      $('pool-tasks').innerHTML = items.map((t) => {
+        const canResolve = t.settling || (t.state === 'unknown' && !t.upstreamTaskId);
+        return `<tr><td class="pool-wrap"><strong>${h(t.id)}</strong><span class="pool-id">请求：${h(t.requestId)}</span></td><td class="pool-wrap">${h(t.accountName || accountName(t.accountId))}<span class="pool-id">${h(t.accountId)}</span></td><td class="pool-wrap">${h(kinds[t.kind] || t.kind)}${detail(t.model || '未提供模型')}</td><td class="pool-wrap">${tag(states[t.state] || t.state, t.state === 'succeeded' ? 'success' : ['unknown', 'failed', 'settling'].includes(t.state) ? 'warn' : 'muted')}${t.settling ? detail('结算待确认 · 占位尚未释放', 'pool-warning') : ''}${detail(`预估积分：${number(t.estimatedCredits)}`)}${t.error ? detail(t.error, 'pool-warning') : ''}</td><td class="pool-wrap">${h(t.upstreamTaskId || (t.state === 'unknown' ? '无上游 ID · 无法据此自动找回' : '尚无上游任务 ID'))}${detail(`创建：${dateText(t.createdAt)}`)}${detail(`更新：${dateText(t.updatedAt)}`)}${canResolve ? `<div class="row-actions" style="margin-top:6px"><button type="button" class="btn btn-secondary" data-action="resolve-task" data-task-id="${h(t.id)}">核对后释放占位</button></div>` : ''}</td></tr>`;
+      }).join('') || emptyRow(5, '暂无任务记录');
+      controls();
     } else {
       $('pool-events').innerHTML = items.map((e) => `<tr><td>${h(dateText(e.createdAt))}</td><td class="pool-wrap">${h(eventNames[e.type] || e.type)}<span class="pool-id">${h(e.id)}</span></td><td class="pool-wrap">${h(e.fromAccountId || e.toAccountId ? `${accountName(e.fromAccountId)} → ${accountName(e.toAccountId)}` : accountName(e.accountId))}<span class="pool-id">${h(e.accountId || e.toAccountId || '')}</span></td><td class="pool-wrap">${h(e.reason || '未提供原因')}${e.actor ? detail(`操作者：${e.actor}`) : ''}</td></tr>`).join('') || emptyRow(4, '暂无操作或调度事件');
     }
@@ -270,6 +279,29 @@
       await reloadAfterMutation('账号已删除');
     });
   };
+  window.resolvePoolTask = async function (id) {
+    const task = pool.taskRows.get(id);
+    if (!task) return message('任务列表已变化，请刷新后重新核对。', true);
+    const confirmation = task.settling ? 'balance_reconciliation' : 'upstream_not_created_or_failed';
+    const notice = task.settling
+      ? `任务 ${id} 已结束，确认重试原账号余额结算吗？余额刷新失败时会继续保留占位。`
+      : `请先在即梦官网核对账号“${task.accountName || task.accountId}”的任务 ${id}。仅在确认上游未创建任务或任务已失败/取消时继续；正在运行、已成功或无法确认时请取消。确认标记失败并尝试结算吗？`;
+    if (!confirm(notice)) return;
+    await mutate(async () => {
+      const response = await request(`/account-pool/tasks/${encodeURIComponent(id)}/resolve`, 'POST', {
+        expectedState: task.state, expectedUpdatedAt: task.updatedAt, expectedAccountId: task.accountId, confirmation
+      });
+      const resolved = response.task;
+      if (resolved?.id !== id || resolved.settling !== false) throw new Error('尚未确认释放成功，请刷新核对任务状态。');
+      await reloadAfterMutation('任务占位已核对释放');
+    });
+  };
+  $('pool-tasks').addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-action="resolve-task"]');
+    if (!button || button.disabled) return;
+    const taskId = button.dataset.taskId;
+    if (taskId) window.resolvePoolTask(taskId);
+  });
   async function loadRecords(kind, offset) {
     const prev = $(`pool-${kind}-prev`), next = $(`pool-${kind}-next`);
     prev.disabled = next.disabled = true;

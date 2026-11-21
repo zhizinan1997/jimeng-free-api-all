@@ -434,6 +434,32 @@ test('real service syncs peer balance on settle and retains verified UID when id
     assert.equal(rotatedRecovered.body.upstreamIdentity.refreshFailed, false);
     assert.equal(rotatedRecovered.body.upstreamIdentity.refreshError, null);
 
+    // Scenario 3: Resolve stuck unknown task via admin HTTP endpoint (401 without session, 200 with session).
+    // Refresh d2 too so both c2 and d2 carry explicit is_vip: false; -vip model is rejected while standard model acquires.
+    assert.equal((await call(`/account-pool/${d2.id}/refresh-status`, 'POST')).status, 200);
+    const vipAttempt = await pool.acquireTask({ requestId: 'p1-3-vip-deny', ownerHash: 'owner-1', requestFingerprint: 'fp-p1-3-vip', kind: 'video', model: 'jimeng-video-seedance-2.0-vip', estimatedCredits: null })
+      .then(lease => ({ ok: true, accountId: lease.account.id }), err => ({ ok: false, statusCode: err.statusCode, message: err.message }));
+    assert.equal(vipAttempt.ok, false, `Expected 409 rejection, got ${JSON.stringify({ vipAttempt, rotatedMembership: rotatedRecovered.body.status.membership, accounts: (await call('/account-pool/dashboard')).body.accounts.map(a => ({ id: a.id, m: a.status.membership, s: a.scheduling })) })}`);
+    assert.equal(vipAttempt.statusCode, 409);
+    assert.match(vipAttempt.message, /该模型所需会员权益未核验/);
+    const stuckLease = await pool.acquireTask({ requestId: 'p1-3-stuck', ownerHash: 'owner-1', requestFingerprint: 'fp-p1-3', kind: 'video', model: 'jimeng-video-seedance-2.0', estimatedCredits: null });
+    pool.transitionTask(stuckLease.taskId, { state: 'submitting' });
+    pool.transitionTask(stuckLease.taskId, { state: 'unknown' });
+    const unauthResolve = await fetch(`${base}/account-pool/tasks/${stuckLease.taskId}/resolve`, { method: 'POST' });
+    assert.equal(unauthResolve.status, 401);
+    assert.equal((await call(`/account-pool/tasks/${stuckLease.taskId}/resolve`, 'POST')).status, 400);
+    const stuckTask = pool.readTask(stuckLease.taskId, 'owner-1');
+    const confirmation = { expectedState: stuckTask.state, expectedUpdatedAt: stuckTask.updatedAt,
+      expectedAccountId: stuckTask.accountId, confirmation: 'upstream_not_created_or_failed' };
+    assert.equal((await call(`/account-pool/tasks/${stuckLease.taskId}/resolve`, 'POST', { ...confirmation, expectedAccountId: 'old-account' })).status, 409);
+    const resolvedRes = await call(`/account-pool/tasks/${stuckLease.taskId}/resolve`, 'POST', confirmation);
+    assert.equal(resolvedRes.status, 200);
+    assert.equal(resolvedRes.body.success, true);
+    assert.equal(resolvedRes.body.task.state, 'failed');
+    assert.equal(resolvedRes.body.task.settling, false);
+    assert.equal((await call('/account-pool/dashboard')).body.accounts.find(x => x.id === c2.id).scheduling.unknownCostBusy, false);
+    assert.equal((await call(`/account-pool/tasks/${stuckLease.taskId}/resolve`, 'POST', confirmation)).status, 409);
+
     t.diagnostic(`isolated P1 reaudit HTTP/SQLite evidence: ${dir}`);
   } finally {
     await new Promise(resolve => server.close(resolve));

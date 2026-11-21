@@ -17,7 +17,8 @@ export default {
   },
   post: {
     "/": controller.create,
-    "/:id/refresh-status": controller.refresh
+    "/:id/refresh-status": controller.refresh,
+    "/tasks/:id/resolve": controller.resolveTask
   },
   patch: {
     "/settings": controller.settings,

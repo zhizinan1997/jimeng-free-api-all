@@ -457,6 +457,13 @@ async function refreshStatusLocked(id: string, lockToken: string): Promise<Publi
           : { verified: false, userId: null, displayName: null, checkedAt: null, credentialVersion, refreshFailed: true, refreshError: '上游身份核验本次刷新失败', lastRefreshAttemptAt: timestamp };
       }
     }
+    if (credit.vipCredit > 0) {
+      if (membership === 'unknown' || !membership || typeof membership !== 'object') {
+        membership = { isVip: true, vipCredit: credit.vipCredit, source: '/commerce/v1/benefits/user_credit' };
+      } else if (membership.isVip == null) {
+        membership = { ...membership, isVip: true, vipCredit: credit.vipCredit };
+      }
+    }
     const sessionHash = hashCredential(sessionId);
     const result = db.prepare(`UPDATE ${TABLE} SET session_hash=COALESCE(session_hash, ?), free_credit=?, purchase_credit=?, vip_credit=?, total_credit=?, membership_json=?, identity_json=?, status_checked_at=?, status_error=NULL, updated_at=? WHERE id=? AND calibration_token=? AND calibration_until>?`).run(
       sessionHash, credit.giftCredit ?? null, credit.purchaseCredit ?? null, credit.vipCredit ?? null, credit.totalCredit, JSON.stringify(publicMetadata(membership)), identity ? JSON.stringify(identity) : null, timestamp, timestamp, id, lockToken, Date.now()
@@ -481,7 +488,7 @@ db.transaction(() => {
         vip_credit=NULL, total_credit=NULL, status_checked_at=NULL, status_error=NULL`);
 }).immediate();
 
-export const { acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult, readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts, listTasks, listEvents, refreshStaleAccounts } = scheduler;
+export const { acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, resolveStuckTask, readTask, readTaskCredential, readTaskResult, readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts, listTasks, listEvents, refreshStaleAccounts } = scheduler;
 export const refreshStatus = scheduler.refreshAccount;
 
 // Explicit named service API for callers that do not want to use the default object.
@@ -506,7 +513,7 @@ export const accountPool = {
   setMembershipStatusProvider,
   setCreditStatusProvider,
   readTaskAccount,
-  acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, readTask, readTaskCredential, readTaskResult,
+  acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, resolveStuckTask, readTask, readTaskCredential, readTaskResult,
   readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts,
   listTasks, listEvents, refreshStaleAccounts, scanTasksForMaintenance: scheduler.scanTasksForMaintenance
 };

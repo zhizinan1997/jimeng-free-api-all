@@ -31,3 +31,6 @@ export async function settings(request: Request) { return admin(request, actor =
 export async function order(request: Request) { return admin(request, actor => accountPool.reorderAccounts(request.body, actor)); }
 export async function tasks(request: Request) { return admin(request, () => accountPool.listTasks(...paging(request))); }
 export async function events(request: Request) { return admin(request, () => accountPool.listEvents(...paging(request))); }
+export async function resolveTask(request: Request) {
+  return admin(request, async actor => ({ success: true, task: await accountPool.resolveStuckTask(id(request), request.body, actor) }));
+}
