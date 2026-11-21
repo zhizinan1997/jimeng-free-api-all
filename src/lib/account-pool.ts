@@ -3,7 +3,11 @@ import crypto from "crypto";
 import fs from "fs-extra";
 import path from "path";
 
-import { getCredit, request } from "@/api/controllers/core.ts";
+import { request } from "@/api/controllers/core.ts";
+import { createPoolScheduler, PoolError } from "./account-pool-scheduler.ts";
+import { parseJimengAccountInfo } from "./jimeng-account-info.ts";
+export type { PoolTask, PoolTaskState, PoolTaskKind, PoolLease, PoolSettings, PoolEvent, AcquireTaskInput, PoolTaskRecoveryRecord } from "./account-pool-scheduler.ts";
+export { PoolError } from "./account-pool-scheduler.ts";
 
 const DB_PATH = process.env.DB_PATH || "./data/jimeng.db";
 const TABLE = "jimeng_accounts";
@@ -69,6 +73,7 @@ interface AccountRow {
   name: string;
   credential_kind: AccountCredentialKind;
   credential_hash: string;
+  session_hash?: string | null;
   credential_ciphertext: string;
   enabled: number;
   failure_count: number;
@@ -84,6 +89,8 @@ interface AccountRow {
   membership_json: string | null;
   status_checked_at: string | null;
   status_error: string | null;
+  credential_version?: number;
+  identity_json?: string | null;
   metadata_json: string;
   created_at: string;
   updated_at: string;
@@ -135,7 +142,7 @@ function extractSessionId(credential: string, kind: AccountCredentialKind): stri
   }
   // 也允许直接粘贴 sessionId，方便从接口或环境变量中复制。
   if (!value && !normalized.includes("=") && /^[^\s;]+$/.test(raw)) value = raw;
-  if (!value) throw new Error("Cookie 中缺少 sessionid、sessionid_ss 或 sid_tt");
+  if (!value) throw new PoolError("Cookie 中缺少 sessionid、sessionid_ss 或 sid_tt");
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
@@ -164,8 +171,22 @@ function hashCredential(value: string): string {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function syncLegacySessionHashes(): void {
+  const missing = db.prepare(`SELECT id, credential_kind, credential_ciphertext FROM ${TABLE} WHERE session_hash IS NULL`).all() as Array<{ id: string; credential_kind: AccountCredentialKind; credential_ciphertext: string }>;
+  if (!missing.length) return;
+  for (const item of missing) {
+    try {
+      const credential = decrypt(item.credential_ciphertext);
+      const sessionHash = hashCredential(extractSessionId(credential, item.credential_kind));
+      db.prepare(`UPDATE ${TABLE} SET session_hash = ? WHERE id = ? AND session_hash IS NULL`).run(sessionHash, item.id);
+    } catch {
+      // Keep legacy rows untouched when the key is unavailable or ciphertext cannot be decrypted yet.
+    }
+  }
+}
+
 function credentialInput(input: AccountPoolCreateInput | AccountPoolUpdateInput): { value: string; kind: AccountCredentialKind } | null {
-  if (input.cookie && input.sessionId) throw new Error("cookie 和 sessionId 只能提供一个");
+  if (input.cookie && input.sessionId) throw new PoolError("cookie 和 sessionId 只能提供一个");
   if (input.cookie?.trim()) return { value: input.cookie.trim(), kind: "cookie" };
   if (input.sessionId?.trim()) return { value: input.sessionId.trim(), kind: "sessionid" };
   return null;
@@ -203,7 +224,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_${TABLE}_eligible ON ${TABLE}(enabled, cooldown_until, failure_count);
 `);
 
-let roundRobinCursor = 0;
 let membershipStatusProvider: MembershipStatusProvider | undefined;
 
 function toPublic(row: AccountRow): PublicAccount {
@@ -224,19 +244,33 @@ function toPublic(row: AccountRow): PublicAccount {
       purchaseCredit: row.purchase_credit,
       vipCredit: row.vip_credit,
       totalCredit: row.total_credit,
-      membership: parseJson(row.membership_json, "unknown"),
+      membership: publicMetadata(parseJson(row.membership_json, "unknown")),
       checkedAt: row.status_checked_at,
-      ...(row.status_error ? { error: row.status_error } : {})
+      ...(row.status_error ? { error: "上游余额刷新失败或凭据无法使用" } : {})
     },
-    metadata: parseJson(row.metadata_json, {}),
+    metadata: publicMetadata(parseJson(row.metadata_json, {})),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
 
+function publicMetadata(value: unknown): any {
+  if (Array.isArray(value)) return value.map(publicMetadata);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !/cookie|session|token|secret|password|authorization|api.?key|prompt|credential/i.test(key)).map(([key, item]) => [key, publicMetadata(item)]));
+}
+
+function validateInput(input: AccountPoolCreateInput | AccountPoolUpdateInput) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new PoolError('账号参数无效');
+  for (const key of ['name', 'cookie', 'sessionId'] as const) if (input[key] !== undefined && typeof input[key] !== 'string') throw new PoolError('账号字段类型无效');
+  if (input.enabled !== undefined && typeof input.enabled !== 'boolean') throw new PoolError('enabled 必须为布尔值');
+  if (input.metadata !== undefined && (!input.metadata || typeof input.metadata !== 'object' || Array.isArray(input.metadata))) throw new PoolError('metadata 必须为对象');
+  if ((input.cookie !== undefined || input.sessionId !== undefined) && !input.cookie?.trim() && !input.sessionId?.trim()) throw new PoolError('凭据不能为空');
+}
+
 function getRow(id: string): AccountRow {
   const row = db.prepare(`SELECT * FROM ${TABLE} WHERE id = ?`).get(id) as AccountRow | undefined;
-  if (!row) throw new Error(`账号不存在: ${id}`);
+  if (!row) throw new PoolError("账号不存在", 404);
   return row;
 }
 
@@ -245,75 +279,105 @@ export function setMembershipStatusProvider(provider?: MembershipStatusProvider)
 }
 
 export function listAccounts(): PublicAccount[] {
-  return (db.prepare(`SELECT * FROM ${TABLE} ORDER BY created_at ASC`).all() as AccountRow[]).map(toPublic);
+  syncLegacySessionHashes();
+  const list = db.prepare(`SELECT * FROM ${TABLE} ORDER BY priority, created_at, rowid`).all() as AccountRow[];
+  return list.map(item => scheduler.publicAccount(item, list));
 }
 
 export function getAccount(id: string): PublicAccount {
-  return toPublic(getRow(id));
+  syncLegacySessionHashes();
+  return scheduler.publicAccount(getRow(id));
 }
 
-export function createAccount(input: AccountPoolCreateInput): PublicAccount {
-  if (!input.name?.trim()) throw new Error("账号名称不能为空");
-  const credential = credentialInput(input);
-  if (!credential) throw new Error("必须提供 cookie 或 sessionId");
-  extractSessionId(credential.value, credential.kind);
-  const timestamp = now();
-  const id = crypto.randomUUID();
-  try {
-    db.prepare(`INSERT INTO ${TABLE} (id, name, credential_kind, credential_hash, credential_ciphertext, enabled, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, input.name.trim(), credential.kind, hashCredential(credential.value), encrypt(credential.value), input.enabled === false ? 0 : 1,
-      JSON.stringify(input.metadata || {}), timestamp, timestamp
-    );
-  } catch (error: any) {
-    if (String(error?.message).includes("UNIQUE")) throw new Error("该账号凭据已存在");
-    throw error;
-  }
-  return getAccount(id);
+export function createAccount(input: AccountPoolCreateInput, actor?: string): PublicAccount {
+  validateInput(input);
+  return db.transaction(() => {
+    if (!input.name?.trim()) throw new PoolError("账号名称不能为空");
+    const credential = credentialInput(input);
+    if (!credential) throw new PoolError("必须提供 cookie 或 sessionId");
+    const sessionHash = hashCredential(extractSessionId(credential.value, credential.kind));
+    syncLegacySessionHashes();
+    const duplicate = db.prepare(`SELECT id FROM ${TABLE} WHERE credential_hash = ? OR session_hash = ? LIMIT 1`).get(hashCredential(credential.value), sessionHash);
+    if (duplicate) throw new PoolError("该账号凭据或会话已存在", 409);
+    const timestamp = now();
+    const id = crypto.randomUUID();
+    try {
+      db.prepare(`INSERT INTO ${TABLE} (id, name, credential_kind, credential_hash, session_hash, credential_ciphertext, enabled, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        id, input.name.trim(), credential.kind, hashCredential(credential.value), sessionHash, encrypt(credential.value), input.enabled === false ? 0 : 1,
+        JSON.stringify(input.metadata || {}), timestamp, timestamp
+      );
+    } catch (error: any) {
+      if (String(error?.message).includes("UNIQUE")) throw new PoolError("该账号凭据或会话已存在", 409);
+      throw error;
+    }
+    db.prepare('UPDATE jimeng_accounts SET priority=(SELECT COALESCE(MAX(priority),-1)+1 FROM jimeng_accounts WHERE id<>?) WHERE id=?').run(id, id);
+    scheduler.accountChanged('account_created', id, actor);
+    return getAccount(id);
+  }).immediate();
 }
 
-export function updateAccount(id: string, input: AccountPoolUpdateInput): PublicAccount {
+export function updateAccount(id: string, input: AccountPoolUpdateInput, actor?: string): PublicAccount {
+  validateInput(input);
+  return db.transaction(() => {
+    const row = getRow(id);
+    const credential = credentialInput(input);
+    let sessionHash = row.session_hash ?? null;
+    if (credential) {
+      scheduler.assertMutable(id);
+      sessionHash = hashCredential(extractSessionId(credential.value, credential.kind));
+      syncLegacySessionHashes();
+      const duplicate = db.prepare(`SELECT id FROM ${TABLE} WHERE id <> ? AND (credential_hash = ? OR session_hash = ?) LIMIT 1`).get(id, hashCredential(credential.value), sessionHash);
+      if (duplicate) throw new PoolError("该账号凭据或会话已存在", 409);
+    }
+    const timestamp = now();
+    const values = {
+      name: input.name === undefined ? row.name : input.name.trim(),
+      enabled: input.enabled === undefined ? row.enabled : (input.enabled ? 1 : 0),
+      metadata: input.metadata === undefined ? row.metadata_json : JSON.stringify(input.metadata),
+      kind: credential?.kind || row.credential_kind,
+      hash: credential ? hashCredential(credential.value) : row.credential_hash,
+      ciphertext: credential ? encrypt(credential.value) : row.credential_ciphertext
+    };
+    if (!values.name) throw new PoolError("账号名称不能为空");
+    try {
+      db.prepare(`UPDATE ${TABLE} SET name = ?, credential_kind = ?, credential_hash = ?, session_hash = ?, credential_ciphertext = ?, enabled = ?, metadata_json = ?, updated_at = ? WHERE id = ?`).run(
+        values.name, values.kind, values.hash, sessionHash, values.ciphertext, values.enabled, values.metadata, timestamp, id
+      );
+    } catch (error: any) {
+      if (String(error?.message).includes("UNIQUE")) throw new PoolError("该账号凭据或会话已存在", 409);
+      throw error;
+    }
+    if (credential) db.prepare('UPDATE jimeng_accounts SET credential_version=credential_version+1, identity_json=NULL, status_checked_at=NULL, status_error=NULL, free_credit=NULL, purchase_credit=NULL, vip_credit=NULL, total_credit=NULL, membership_json=NULL, calibration_token=NULL, calibration_until=NULL WHERE id=?').run(id);
+    scheduler.accountChanged(credential ? 'credential_updated' : input.enabled !== undefined ? (input.enabled ? 'account_enabled' : 'account_disabled') : 'account_updated', id, actor);
+    return getAccount(id);
+  }).immediate();
+}
+
+export function deleteAccount(id: string, actor?: string): void {
+  db.transaction(() => {
+    scheduler.assertMutable(id);
+    if (scheduler.getSettings().fixedAccountId === id) throw new PoolError('请先取消该账号的固定模式配置', 409);
+    const result = db.prepare(`DELETE FROM ${TABLE} WHERE id = ?`).run(id);
+    if (!result.changes) throw new PoolError('账号不存在', 404);
+    scheduler.accountChanged('account_deleted', id, actor);
+  }).immediate();
+}
+
+export function setAccountEnabled(id: string, enabled: boolean, actor?: string): PublicAccount {
+  if (typeof enabled !== 'boolean') throw new PoolError('enabled 必须为布尔值');
+  return updateAccount(id, { enabled }, actor);
+}
+
+/** Legacy select is a read-only preview. New submissions MUST use acquireTask. */
+export function selectAccount(_strategy: AccountSelectionStrategy = "least_failures"): AccountSelection {
+  return scheduler.preview();
+}
+
+/** Read the task's original account without advancing pool rotation. */
+export function readTaskAccount(id: string): AccountSelection {
   const row = getRow(id);
-  const credential = credentialInput(input);
-  if (credential) { extractSessionId(credential.value, credential.kind); }
-  const timestamp = now();
-  const values = {
-    name: input.name === undefined ? row.name : input.name.trim(),
-    enabled: input.enabled === undefined ? row.enabled : (input.enabled ? 1 : 0),
-    metadata: input.metadata === undefined ? row.metadata_json : JSON.stringify(input.metadata),
-    kind: credential?.kind || row.credential_kind,
-    hash: credential ? hashCredential(credential.value) : row.credential_hash,
-    ciphertext: credential ? encrypt(credential.value) : row.credential_ciphertext
-  };
-  if (!values.name) throw new Error("账号名称不能为空");
-  try {
-    db.prepare(`UPDATE ${TABLE} SET name = ?, credential_kind = ?, credential_hash = ?, credential_ciphertext = ?, enabled = ?, metadata_json = ?, updated_at = ? WHERE id = ?`).run(
-      values.name, values.kind, values.hash, values.ciphertext, values.enabled, values.metadata, timestamp, id
-    );
-  } catch (error: any) {
-    if (String(error?.message).includes("UNIQUE")) throw new Error("该账号凭据已存在");
-    throw error;
-  }
-  return getAccount(id);
-}
-
-export function deleteAccount(id: string): void {
-  const result = db.prepare(`DELETE FROM ${TABLE} WHERE id = ?`).run(id);
-  if (!result.changes) throw new Error(`账号不存在: ${id}`);
-}
-
-export function setAccountEnabled(id: string, enabled: boolean): PublicAccount {
-  getRow(id);
-  db.prepare(`UPDATE ${TABLE} SET enabled = ?, updated_at = ? WHERE id = ?`).run(enabled ? 1 : 0, now(), id);
-  return getAccount(id);
-}
-
-export function selectAccount(strategy: AccountSelectionStrategy = "least_failures"): AccountSelection {
-  const rows = db.prepare(`SELECT * FROM ${TABLE} WHERE enabled = 1 AND (cooldown_until IS NULL OR cooldown_until <= ?) ORDER BY failure_count ASC, last_used_at ASC`).all(now()) as AccountRow[];
-  if (!rows.length) throw new Error("没有可用的即梦账号");
-  const row = strategy === "round_robin" ? rows[roundRobinCursor++ % rows.length] : rows[0];
-  db.prepare(`UPDATE ${TABLE} SET last_used_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), row.id);
   const credential = decrypt(row.credential_ciphertext);
-  return { account: getAccount(row.id), credential, sessionId: extractSessionId(credential, row.credential_kind) };
+  return { account: toPublic(row), credential, sessionId: extractSessionId(credential, row.credential_kind) };
 }
 
 export function markSuccess(id: string): PublicAccount {
@@ -329,24 +393,103 @@ export function markFailure(id: string, cooldownMs = 30_000): PublicAccount {
   return getAccount(id);
 }
 
-export async function refreshStatus(id: string): Promise<PublicAccount> {
+export type CreditStatusProvider = (sessionId: string, credential: string) => Promise<{ giftCredit?: number; purchaseCredit?: number; vipCredit?: number; totalCredit: number }>;
+// Read the actual response shape: missing balance fields are unknown, never synthesized as zero.
+let creditStatusProvider: CreditStatusProvider = async (sessionId, credential) => {
+  const result = await request('POST', '/commerce/v1/benefits/user_credit', sessionId, { cookie: credential.includes('=') ? credential : undefined, data: {} });
+  const credit = result?.credit;
+  if (!credit || !['gift_credit','purchase_credit','vip_credit'].every(key => Number.isFinite(credit[key]) && credit[key] >= 0)) throw new PoolError('上游余额响应缺失有效积分', 502);
+  return { giftCredit: credit.gift_credit, purchaseCredit: credit.purchase_credit, vipCredit: credit.vip_credit, totalCredit: credit.gift_credit + credit.purchase_credit + credit.vip_credit };
+};
+export function setCreditStatusProvider(provider: CreditStatusProvider): void { creditStatusProvider = provider; }
+
+async function refreshStatusLocked(id: string, lockToken: string): Promise<PublicAccount> {
   const row = getRow(id);
-  const credential = decrypt(row.credential_ciphertext);
-  const sessionId = extractSessionId(credential, row.credential_kind);
   try {
-    const credit = await getCredit(sessionId);
-    const membership = membershipStatusProvider ? await membershipStatusProvider(sessionId, toPublic(row)) : "unknown";
+    const credential = decrypt(row.credential_ciphertext);
+    const sessionId = extractSessionId(credential, row.credential_kind);
+    const credit = await creditStatusProvider(sessionId, credential);
+    if (!Number.isFinite(credit.totalCredit) || credit.totalCredit < 0) throw new PoolError('上游余额无效', 502);
+    // Identity is independently verified; membership failure must not invent identity or invalidate a valid balance.
     const timestamp = now();
-    db.prepare(`UPDATE ${TABLE} SET free_credit = ?, purchase_credit = ?, vip_credit = ?, total_credit = ?, membership_json = ?, status_checked_at = ?, status_error = NULL, updated_at = ? WHERE id = ?`).run(
-      credit.giftCredit ?? null, credit.purchaseCredit ?? null, credit.vipCredit ?? null, credit.totalCredit ?? null, JSON.stringify(membership), timestamp, timestamp, id
+    const existingIdentity = parseJson<Record<string, any> | null>(row.identity_json, null);
+    const credentialVersion = typeof row.credential_version === 'number' ? row.credential_version : 1;
+    const preservedIdentity = existingIdentity?.verified === true
+      && typeof existingIdentity.userId === 'string'
+      && existingIdentity.userId.length > 0
+      && (existingIdentity.credentialVersion == null || existingIdentity.credentialVersion === credentialVersion)
+      ? {
+          verified: true,
+          userId: existingIdentity.userId,
+          displayName: typeof existingIdentity.displayName === 'string' ? existingIdentity.displayName : null,
+          checkedAt: typeof existingIdentity.checkedAt === 'string' ? existingIdentity.checkedAt : null,
+          source: typeof existingIdentity.source === 'string' ? existingIdentity.source : '/passport/account/info/v2',
+          credentialVersion
+        }
+      : null;
+    let membership: any = 'unknown';
+    let identity: any = preservedIdentity ? { ...preservedIdentity, refreshFailed: false, refreshError: null } : null;
+    if (membershipStatusProvider) {
+      try {
+        const evidence: any = await membershipStatusProvider(sessionId, toPublic(row));
+        membership = evidence?.membership ?? evidence;
+        if (evidence?.upstreamIdentity?.verified === true && typeof evidence.upstreamIdentity.userId === 'string' && evidence.upstreamIdentity.userId) {
+          identity = {
+            verified: true,
+            userId: evidence.upstreamIdentity.userId,
+            displayName: typeof evidence.upstreamIdentity.displayName === 'string' ? evidence.upstreamIdentity.displayName : null,
+            checkedAt: timestamp,
+            source: evidence.upstreamIdentity.source || '/passport/account/info/v2',
+            credentialVersion,
+            refreshFailed: false,
+            refreshError: null,
+            lastRefreshAttemptAt: timestamp
+          };
+        } else {
+          identity = preservedIdentity
+            ? { ...preservedIdentity, refreshFailed: true, refreshError: '上游身份核验本次刷新未返回有效用户标识，已保留当前凭据已核验主体', lastRefreshAttemptAt: timestamp }
+            : { verified: false, userId: null, displayName: null, checkedAt: null, credentialVersion, refreshFailed: true, refreshError: '上游身份核验本次刷新未返回有效用户标识', lastRefreshAttemptAt: timestamp };
+        }
+      } catch {
+        /* Retain prior verified subject for the unchanged credential while flagging the refresh failure separately. */
+        identity = preservedIdentity
+          ? { ...preservedIdentity, refreshFailed: true, refreshError: '上游身份核验本次刷新失败，已保留当前凭据已核验主体', lastRefreshAttemptAt: timestamp }
+          : { verified: false, userId: null, displayName: null, checkedAt: null, credentialVersion, refreshFailed: true, refreshError: '上游身份核验本次刷新失败', lastRefreshAttemptAt: timestamp };
+      }
+    }
+    if (credit.vipCredit > 0) {
+      if (membership === 'unknown' || !membership || typeof membership !== 'object') {
+        membership = { isVip: true, vipCredit: credit.vipCredit, source: '/commerce/v1/benefits/user_credit' };
+      } else if (membership.isVip == null) {
+        membership = { ...membership, isVip: true, vipCredit: credit.vipCredit };
+      }
+    }
+    const sessionHash = hashCredential(sessionId);
+    const result = db.prepare(`UPDATE ${TABLE} SET session_hash=COALESCE(session_hash, ?), free_credit=?, purchase_credit=?, vip_credit=?, total_credit=?, membership_json=?, identity_json=?, status_checked_at=?, status_error=NULL, updated_at=? WHERE id=? AND calibration_token=? AND calibration_until>?`).run(
+      sessionHash, credit.giftCredit ?? null, credit.purchaseCredit ?? null, credit.vipCredit ?? null, credit.totalCredit, JSON.stringify(publicMetadata(membership)), identity ? JSON.stringify(identity) : null, timestamp, timestamp, id, lockToken, Date.now()
     );
-    return getAccount(id);
-  } catch (error: any) {
-    const message = error instanceof AccountPoolConfigurationError ? error.message : (error?.message || "状态查询失败");
-    db.prepare(`UPDATE ${TABLE} SET status_checked_at = ?, status_error = ?, updated_at = ? WHERE id = ?`).run(now(), message.slice(0, 500), now(), id);
-    throw error;
+    if (!result.changes) throw new PoolError('余额校准租约失效', 409);
+    return toPublic(getRow(id));
+  } catch {
+    db.prepare(`UPDATE ${TABLE} SET status_error=?, updated_at=? WHERE id=? AND calibration_token=?`).run('上游余额刷新失败或凭据无法使用', now(), id, lockToken);
+    throw new PoolError('上游余额刷新失败；保留原余额时间和未结算占位', 502);
   }
 }
+
+const scheduler = createPoolScheduler({ db, publicAccount: toPublic, selection: readTaskAccount, refresh: refreshStatusLocked, encrypt, decrypt, prepareRows: syncLegacySessionHashes });
+// The shared browser could cache another account's identity and balance. Clear both
+// together, before any scheduler tick can use that identity to skip an account.
+db.transaction(() => {
+  db.exec('CREATE TABLE IF NOT EXISTS pool_migrations (name TEXT PRIMARY KEY NOT NULL)');
+  const applied = db.prepare('INSERT OR IGNORE INTO pool_migrations (name) VALUES (?)')
+    .run('isolated-browser-account-cache-v1');
+  if (applied.changes) db.exec(`UPDATE jimeng_accounts
+    SET identity_json=NULL, membership_json=NULL, free_credit=NULL, purchase_credit=NULL,
+        vip_credit=NULL, total_credit=NULL, status_checked_at=NULL, status_error=NULL`);
+}).immediate();
+
+export const { acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, resolveStuckTask, readTask, readTaskCredential, readTaskResult, readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts, listTasks, listEvents, refreshStaleAccounts } = scheduler;
+export const refreshStatus = scheduler.refreshAccount;
 
 // Explicit named service API for callers that do not want to use the default object.
 export const list = listAccounts;
@@ -367,20 +510,21 @@ export const accountPool = {
   markSuccess,
   markFailure,
   refreshStatus,
-  setMembershipStatusProvider
+  setMembershipStatusProvider,
+  setCreditStatusProvider,
+  readTaskAccount,
+  acquireTask, rejectTaskForCredits, retryTaskAfterCreditRejection, transitionTask, settleTask, resolveStuckTask, readTask, readTaskCredential, readTaskResult,
+  readTaskForRecovery, listRecoverableTasks, getDashboard, getSettings, updateSettings, reorderAccounts,
+  listTasks, listEvents, refreshStaleAccounts, scanTasksForMaintenance: scheduler.scanTasksForMaintenance
 };
 
-setMembershipStatusProvider(async (sessionId) => {
+setMembershipStatusProvider(async (sessionId, account) => {
+  const credential = readTaskAccount(account.id).credential;
   const result = await request("POST", "/passport/account/info/v2", sessionId, {
+    cookie: credential.includes("=") ? credential : undefined,
     params: { account_sdk_source: "web" }
   });
-  const source = result?.user_info || result?.user || result?.account || result;
-  const membership = {
-    isVip: source?.is_vip ?? source?.isVip ?? source?.vip_status ?? null,
-    vipExpireAt: source?.vip_expire_time ?? source?.vipExpireTime ?? source?.vip_expire_at ?? null,
-    membershipType: source?.membership_type ?? source?.membershipType ?? null
-  };
-  return Object.values(membership).some((value) => value !== null) ? membership : "unknown";
+  return parseJimengAccountInfo(result);
 });
 
 export default accountPool;

@@ -9,14 +9,20 @@ export default {
   get: {
     "/": controller.list,
     "/select": controller.select,
+    "/dashboard": controller.dashboard,
+    "/tasks": controller.tasks,
+    "/events": controller.events,
     "/:id/status": controller.refresh,
     "/:id": controller.get
   },
   post: {
     "/": controller.create,
-    "/:id/refresh-status": controller.refresh
+    "/:id/refresh-status": controller.refresh,
+    "/tasks/:id/resolve": controller.resolveTask
   },
   patch: {
+    "/settings": controller.settings,
+    "/order": controller.order,
     "/:id": controller.update,
     "/:id/enabled": controller.enable
   },

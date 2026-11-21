@@ -1,5 +1,7 @@
 # 构建阶段
 FROM node:22-alpine AS builder
+ARG APK_MIRROR_HOST
+RUN if [ -n "$APK_MIRROR_HOST" ]; then sed -i "s/dl-cdn.alpinelinux.org/$APK_MIRROR_HOST/g" /etc/apk/repositories; fi
 
 # 安装编译 better-sqlite3 所需的工具（alpine 无预编译 musl 二进制）
 RUN apk add --no-cache python3 make g++
@@ -21,6 +23,8 @@ RUN rm -rf node_modules && npm ci --omit=dev --registry https://registry.npmmirr
 
 # 最终运行镜像 - 更小的基础镜像
 FROM node:22-alpine
+ARG APK_MIRROR_HOST
+RUN if [ -n "$APK_MIRROR_HOST" ]; then sed -i "s/dl-cdn.alpinelinux.org/$APK_MIRROR_HOST/g" /etc/apk/repositories; fi
 
 # 安装运行时必需的库（better-sqlite3 需要）
 RUN apk add --no-cache libstdc++

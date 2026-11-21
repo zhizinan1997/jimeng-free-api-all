@@ -1,4 +1,30 @@
+import fs from 'fs';
+import path from 'path';
 import logger from './logger.js';
+
+// 自动加载本地被忽略的持久化环境变量（例如账号池加密密钥），重启保持稳定
+function loadLocalEnvFile(filePath: string) {
+    try {
+        if (!fs.existsSync(filePath)) return;
+        const content = fs.readFileSync(filePath, 'utf8');
+        for (const line of content.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const separator = trimmed.indexOf('=');
+            if (separator <= 0) continue;
+            const key = trimmed.slice(0, separator).trim();
+            const value = trimmed.slice(separator + 1).trim();
+            if (!process.env[key] && value) {
+                process.env[key] = value;
+            }
+        }
+    } catch (e: any) {
+        logger.warn(`加载本地环境文件 ${filePath} 失败: ${e?.message || e}`);
+    }
+}
+
+loadLocalEnvFile(path.resolve('./data/account-pool.env'));
+loadLocalEnvFile(path.resolve('./portable/config/portable.env'));
 
 // 允许无限量的监听器
 process.setMaxListeners(Infinity);

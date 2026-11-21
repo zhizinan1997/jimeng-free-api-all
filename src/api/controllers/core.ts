@@ -1,3 +1,4 @@
+import { acceptPoolSubmission, beginPoolSubmission, failPoolTask, finishPoolTask, observePoolHistory, poolCookie, rejectPoolSubmissionForCredits } from "../../lib/pool-task-context.ts";
 import { PassThrough } from "stream";
 import path from "path";
 import _ from "lodash";
@@ -10,6 +11,9 @@ import { createParser } from "eventsource-parser";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import browserTransport from "@/lib/browser-transport.ts";
+import { normalizeCookieHeader, parseCookiePairs } from "@/lib/jimeng-cookie.ts";
+
+export { parseCookiePairs } from "@/lib/jimeng-cookie.ts";
 
 // 模型名称
 const MODEL_NAME = "jimeng";
@@ -90,35 +94,41 @@ export function generateCookie(refreshToken: string) {
  *
  * @param refreshToken 用于刷新access_token的refresh_token
  */
-export async function getCredit(refreshToken: string) {
-  const {
-    credit: { gift_credit, purchase_credit, vip_credit }
-  } = await request("POST", "/commerce/v1/benefits/user_credit", refreshToken, {
+export async function getCredit(refreshToken: string, cookie?: string) {
+  const balanceData = await request("POST", "/commerce/v1/benefits/user_credit", refreshToken, {
+    cookie,
     data: {},
     headers: {
-      // Cookie: 'x-web-secsdk-uid=ef44bd0d-0cf6-448c-b517-fd1b5a7267ba; s_v_web_id=verify_m4b1lhlu_DI8qKRlD_7mJJ_4eqx_9shQ_s8eS2QLAbc4n; passport_csrf_token=86f3619c0c4a9c13f24117f71dc18524; passport_csrf_token_default=86f3619c0c4a9c13f24117f71dc18524; n_mh=9-mIeuD4wZnlYrrOvfzG3MuT6aQmCUtmr8FxV8Kl8xY; sid_guard=a7eb745aec44bb3186dbc2083ea9e1a6%7C1733386629%7C5184000%7CMon%2C+03-Feb-2025+08%3A17%3A09+GMT; uid_tt=59a46c7d3f34bda9588b93590cca2e12; uid_tt_ss=59a46c7d3f34bda9588b93590cca2e12; sid_tt=a7eb745aec44bb3186dbc2083ea9e1a6; sessionid=a7eb745aec44bb3186dbc2083ea9e1a6; sessionid_ss=a7eb745aec44bb3186dbc2083ea9e1a6; is_staff_user=false; sid_ucp_v1=1.0.0-KGRiOGY2ODQyNWU1OTk3NzRhYTE2ZmZhYmFjNjdmYjY3NzRmZGRiZTgKHgjToPCw0cwbEIXDxboGGJ-tHyAMMITDxboGOAhAJhoCaGwiIGE3ZWI3NDVhZWM0NGJiMzE4NmRiYzIwODNlYTllMWE2; ssid_ucp_v1=1.0.0-KGRiOGY2ODQyNWU1OTk3NzRhYTE2ZmZhYmFjNjdmYjY3NzRmZGRiZTgKHgjToPCw0cwbEIXDxboGGJ-tHyAMMITDxboGOAhAJhoCaGwiIGE3ZWI3NDVhZWM0NGJiMzE4NmRiYzIwODNlYTllMWE2; store-region=cn-gd; store-region-src=uid; user_spaces_idc={"7444764277623653426":"lf"}; ttwid=1|cxHJViEev1mfkjntdMziir8SwbU8uPNVSaeh9QpEUs8|1733966961|d8d52f5f56607427691be4ac44253f7870a34d25dd05a01b4d89b8a7c5ea82ad; _tea_web_id=7444838473275573797; fpk1=fa6c6a4d9ba074b90003896f36b6960066521c1faec6a60bdcb69ec8ddf85e8360b4c0704412848ec582b2abca73d57a; odin_tt=efe9dc150207879b88509e651a1c4af4e7ffb4cfcb522425a75bd72fbf894eda570bbf7ffb551c8b1de0aa2bfa0bd1be6c4157411ecdcf4464fcaf8dd6657d66',
       Referer: "https://jimeng.jianying.com/ai-tool/image/generate",
-      // "Device-Time": 1733966964,
-      // Sign: "f3dbb824b378abea7c03cbb152b3a365"
     }
   });
+  const credit = balanceData?.credit;
+  if (!credit || !['gift_credit', 'purchase_credit', 'vip_credit'].every(key =>
+    typeof credit[key] === 'number' && Number.isFinite(credit[key]) && credit[key] >= 0)) {
+    throw new Error('上游积分响应缺少有效余额，不能按零积分处理');
+  }
+  const { gift_credit, purchase_credit, vip_credit } = credit;
+  const totalCredit = gift_credit + purchase_credit + vip_credit;
   logger.info(`\n积分信息: \n赠送积分: ${gift_credit}, 购买积分: ${purchase_credit}, VIP积分: ${vip_credit}`);
   return {
     giftCredit: gift_credit,
     purchaseCredit: purchase_credit,
     vipCredit: vip_credit,
-    totalCredit: gift_credit + purchase_credit + vip_credit
-  }
+    totalCredit,
+    balance: totalCredit
+  };
 }
+
 
 /**
  * 接收今日积分
  *
  * @param refreshToken 用于刷新access_token的refresh_token
  */
-export async function receiveCredit(refreshToken: string) {
+export async function receiveCredit(refreshToken: string, cookie?: string) {
   logger.info("正在收取今日积分...")
   const { cur_total_credits, receive_quota } = await request("POST", "/commerce/v1/benefits/credit_receive", refreshToken, {
+    cookie,
     data: {
       time_zone: "Asia/Shanghai"
     },
@@ -128,22 +138,6 @@ export async function receiveCredit(refreshToken: string) {
   });
   logger.info(`\n今日${receive_quota}积分收取成功\n剩余积分: ${cur_total_credits}`);
   return cur_total_credits;
-}
-
-/**
- * 将cookie字符串拆分为键值对
- *
- * @param cookie cookie字符串
- */
-export function parseCookiePairs(cookie: string): Array<[string, string]> {
-  return cookie
-    .split("; ")
-    .filter(Boolean)
-    .map((item) => {
-      const index = item.indexOf("=");
-      if (index < 0) return [item, ""] as [string, string];
-      return [item.slice(0, index), item.slice(index + 1)] as [string, string];
-    });
 }
 
 /**
@@ -178,9 +172,10 @@ export async function request(
   method: string,
   uri: string,
   refreshToken: string,
-  options: AxiosRequestConfig = {}
+  options: AxiosRequestConfig & { cookie?: string; maxRetries?: number } = {}
 ) {
   const token = await acquireToken(refreshToken);
+  const cookie = normalizeCookieHeader(poolCookie(refreshToken, options.cookie), generateCookie(token));
   const deviceTime = util.unixTimestamp();
   const sign = util.md5(
     `9e2c|${uri.slice(-7)}|${PLATFORM_CODE}|${VERSION_CODE}|${deviceTime}||11ac`
@@ -197,7 +192,7 @@ export async function request(
 
   const headers = {
     ...FAKE_HEADERS,
-    Cookie: generateCookie(token),
+    Cookie: cookie,
     "Device-Time": deviceTime,
     Sign: sign,
     "Sign-Ver": "1",
@@ -205,8 +200,8 @@ export async function request(
   };
 
   logger.info(`发送请求: ${method.toUpperCase()} ${fullUrl}`);
-  logger.info(`请求参数: ${JSON.stringify(requestParams)}`);
-  logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
+  logger.info(`请求参数字段: ${Object.keys(requestParams).join(",")}`);
+  logger.info(`请求数据字段: ${Object.keys(options.data && typeof options.data === "object" ? options.data : {}).join(",")}`);
 
   // 浏览器传输：流式响应（对话类接口）保持直连，其余接口按配置决定是否走浏览器
   const canUseBrowser = browserTransport.enabled && options.responseType != "stream";
@@ -215,7 +210,23 @@ export async function request(
 
   // 添加重试逻辑
   let retries = 0;
-  const maxRetries = 3; // 最大重试次数
+  const isSubmission = uri.split("?")[0] === "/mweb/v1/aigc_draft/generate";
+  const maxRetries = isSubmission ? 0 : options.maxRetries ?? 3;
+  if (isSubmission) beginPoolSubmission(options.data?.submit_id);
+  const acceptResponse = async (response: any) => {
+    if (response.status >= 400) throw new Error(`上游 HTTP ${response.status}`);
+    const returnedTask = response.data?.data?.aigc_data;
+    if (isSubmission && String(response.data?.ret) !== '0' && (returnedTask?.history_record_id || returnedTask?.task?.task_id)) {
+      throw new Error('上游拒单响应同时包含任务标识，需要保留原账号确认');
+    }
+    const data = checkResult(response);
+    if (isSubmission) {
+      const id = data?.aigc_data?.history_record_id || data?.aigc_data?.task?.task_id;
+      acceptPoolSubmission(id ? String(id) : undefined);
+    }
+    if (uri.split("?")[0] === "/mweb/v1/get_history_by_ids") await observePoolHistory(data, options.data?.history_ids || options.data?.submit_ids || []);
+    return data;
+  };
   let lastError = null;
 
   while (retries <= maxRetries) {
@@ -233,7 +244,7 @@ export async function request(
             params: requestParams,
             headers,
             data: options.data,
-            cookiePairs: parseCookiePairs(generateCookie(token)),
+            cookiePairs: parseCookiePairs(cookie),
           })
         : await axios.request({
             method,
@@ -242,7 +253,7 @@ export async function request(
             headers: headers,
             timeout: 45000, // 增加超时时间到45秒
             validateStatus: () => true, // 允许任何状态码
-            ..._.omit(options, "params", "headers"),
+            ..._.omit(options, "params", "headers", "maxRetries"),
           });
 
       // 记录响应状态和头信息
@@ -251,10 +262,8 @@ export async function request(
       // 流式响应直接返回response
       if (options.responseType == "stream") return response;
 
-      // 记录响应数据摘要
-      const responseDataSummary = JSON.stringify(response.data).substring(0, 500) +
-        (JSON.stringify(response.data).length > 500 ? "..." : "");
-      logger.info(`响应数据摘要: ${responseDataSummary}`);
+      // 响应中可能包含提示词、素材地址或临时签名，日志只记录状态。
+      logger.info(`响应业务状态: ${String(response.data?.ret ?? response.data?.code ?? "unknown")}`);
 
       // 检查HTTP状态码
       if (response.status >= 400) {
@@ -266,7 +275,7 @@ export async function request(
       }
 
       try {
-        return checkResult(response);
+        return await acceptResponse(response);
       } catch (error) {
         // 上游风控拒绝：该接口需要浏览器端签名，改用浏览器传输重试一次
         const riskControl =
@@ -283,30 +292,34 @@ export async function request(
             params: requestParams,
             headers,
             data: options.data,
-            cookiePairs: parseCookiePairs(generateCookie(token)),
+            cookiePairs: parseCookiePairs(cookie),
           });
           logger.info(`响应状态: ${browserResponse.status} ${browserResponse.statusText}`);
-          const browserSummary = JSON.stringify(browserResponse.data).substring(0, 500) +
-            (JSON.stringify(browserResponse.data).length > 500 ? "..." : "");
-          logger.info(`响应数据摘要: ${browserSummary}`);
+          logger.info(`响应业务状态: ${String(browserResponse.data?.ret ?? "unknown")}`);
           // 传输确实可用才记住该模型链路，避免把不可用的浏览器传输固化下来
           browserTransport.markRequired(riskControlKey);
-          return checkResult(browserResponse);
-        } catch (browserError) {
-          // 浏览器传输抛出业务错误时透传；基础设施错误（缺依赖、浏览器启动失败等）保留原始风控错误
+          return await acceptResponse(browserResponse);
+        } catch (browserError: any) {
+          // 仅在确认未发送浏览器请求（缺少 playwright-core）时保留原始风控拒绝；
+          // 网络超时、HTTP 异常或响应缺 ID 都可能已被受理，必须透传 fallback 错误以保留 unknown 状态。
           if (browserError instanceof APIException) throw browserError;
-          logger.error(`浏览器传输不可用，保留原始风控错误: ${browserError.message}`);
-          throw error;
+          if (typeof browserError?.message === "string" && browserError.message.includes("缺少依赖 playwright-core")) {
+            logger.error("浏览器传输不可用，保留原始风控错误");
+            throw error;
+          }
+          logger.error("浏览器传输回退失败，保留待确认状态");
+          throw browserError;
         }
       }
     }
     catch (error) {
       lastError = error;
-      logger.error(`请求失败 (尝试 ${retries + 1}/${maxRetries + 1}): ${error.message}`);
+      logger.error(`请求失败 (尝试 ${retries + 1}/${maxRetries + 1})`);
 
       // 如果是网络错误或超时，尝试重试
+      const message = typeof error?.message === 'string' ? error.message : '';
       if ((error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' ||
-        error.message.includes('timeout') || error.message.includes('network')) &&
+        message.includes('timeout') || message.includes('network')) &&
         retries < maxRetries) {
         retries++;
         continue;
@@ -318,10 +331,16 @@ export async function request(
   }
 
   // 所有重试都失败了，抛出最后一个错误
-  logger.error(`请求失败，已重试 ${retries} 次: ${lastError.message}`);
+  logger.error(`请求失败，已重试 ${retries} 次`);
   if (lastError.response) {
     logger.error(`响应状态: ${lastError.response.status}`);
-    logger.error(`响应数据: ${JSON.stringify(lastError.response.data)}`);
+
+  }
+  if (isSubmission) {
+    if (lastError instanceof APIException && lastError.compare(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS)) {
+      if (!rejectPoolSubmissionForCredits()) await finishPoolTask("failed", "上游明确拒绝生成");
+    } else if (lastError instanceof APIException && lastError.compare(EX.API_RISK_CONTROL_REJECTED)) await finishPoolTask("failed", "上游明确拒绝生成");
+    else await failPoolTask();
   }
   throw lastError;
 }
@@ -333,8 +352,15 @@ export async function request(
  */
 export async function checkFileUrl(fileUrl: string) {
   if (util.isBASE64Data(fileUrl)) return;
+  try {
+    const host = new URL(fileUrl).hostname;
+    if (host === "qiniu.dr.zxuv.cn" || host.endsWith(".qiniu.dr.zxuv.cn")) {
+      logger.info("跳过七牛资源 HEAD 预检，直接下载");
+      return;
+    }
+  } catch {}
   const result = await axios.head(fileUrl, {
-    timeout: 15000,
+    timeout: 60000,
     validateStatus: () => true,
   });
   if (result.status >= 400)
@@ -369,7 +395,7 @@ export async function uploadFile(
   // 只显示类型信息，不显示完整的base64内容
   const fileDesc = fileUrl.startsWith('data:')
     ? `base64图片(${fileUrl.length}字符)`
-    : fileUrl.substring(0, 100);
+    : /^https?:\/\//i.test(fileUrl) ? '网络图片' : '本地图片';
   logger.info(`开始上传文件: ${fileDesc}`);
 
   // 获取文件内容
@@ -403,7 +429,7 @@ export async function uploadFile(
     fileData = fs.readFileSync(absolutePath);
   }
 
-  logger.info(`文件大小: ${fileData.length} bytes, 文件名: ${filename}`);
+  logger.info(`文件大小: ${fileData.length} bytes`);
 
   // 获取上传令牌
   // 旧版网页端的视频参考图使用 video_cover 场景；新版接口有时只接受数字场景 2。
@@ -440,102 +466,100 @@ export async function uploadFile(
   const imageCrc32 = (crc32Value >>> 0).toString(16);
   logger.info(`文件CRC32: ${imageCrc32}`);
 
-  // 准备获取上传凭证的请求参数
-  const getUploadImageProofRequestParams = {
-    Action: 'ApplyImageUpload',
-    FileSize: fileData.length,
-    ServiceId: 'tb4s082cfz',
-    Version: '2018-08-01',
-    s: util.generateRandomString({ length: 11, charset: 'alphanumeric' }),
-  };
-
-  // 生成AWS签名请求头
-  const requestHeadersInfo = await generateAWSAuthorizationHeader(
-    uploadAuth.access_key_id,
-    uploadAuth.secret_access_key,
-    uploadAuth.session_token,
-    'cn-north-1',
-    'imagex',
-    'GET',
-    getUploadImageProofRequestParams,
-  );
-
-  // 获取图片上传凭证
-  const uploadImgRes = await axios.get(
-    'https://imagex.bytedanceapi.com/?' + new URLSearchParams(getUploadImageProofRequestParams as any).toString(),
-    { headers: requestHeadersInfo, timeout: 30000 }
-  );
-
-  if (uploadImgRes.data?.['Response ']?.hasOwnProperty('Error')) {
-    throw new APIException(EX.API_REQUEST_FAILED, uploadImgRes.data['Response ']['Error']['Message']);
-  }
-
-  const UploadAddress = uploadImgRes.data.Result.UploadAddress;
-  const uploadImgUrl = `https://${UploadAddress.UploadHosts[0]}/upload/v1/${UploadAddress.StoreInfos[0].StoreUri}`;
-
-  logger.info(`上传图片到: ${uploadImgUrl}`);
-
-  // 上传图片
-  const imageUploadRes = await axios.post(
-    uploadImgUrl,
-    fileData,
-    {
-      headers: {
-        Authorization: UploadAddress.StoreInfos[0].Auth,
-        'Content-Crc32': imageCrc32,
-        'Content-Type': 'application/octet-stream',
-      },
-      timeout: 60000,
+  let imageUri = '';
+  let lastUploadStageError: any = null;
+  for (let uploadAttempt = 0; uploadAttempt < 3; uploadAttempt++) {
+    try {
+      const getUploadImageProofRequestParams = {
+        Action: 'ApplyImageUpload',
+        FileSize: fileData.length,
+        ServiceId: 'tb4s082cfz',
+        Version: '2018-08-01',
+        s: util.generateRandomString({ length: 11, charset: 'alphanumeric' }),
+      };
+      const requestHeadersInfo = await generateAWSAuthorizationHeader(
+        uploadAuth.access_key_id,
+        uploadAuth.secret_access_key,
+        uploadAuth.session_token,
+        'cn-north-1',
+        'imagex',
+        'GET',
+        getUploadImageProofRequestParams,
+      );
+      const uploadImgRes = await axios.get(
+        'https://imagex.bytedanceapi.com/?' + new URLSearchParams(getUploadImageProofRequestParams as any).toString(),
+        { headers: requestHeadersInfo, timeout: 20000 }
+      );
+      if (uploadImgRes.data?.['Response ']?.hasOwnProperty('Error')) {
+        throw new APIException(EX.API_REQUEST_FAILED, uploadImgRes.data['Response ']['Error']['Message']);
+      }
+      const UploadAddress = uploadImgRes.data.Result.UploadAddress;
+      const uploadHosts: string[] = Array.isArray(UploadAddress.UploadHosts) && UploadAddress.UploadHosts.length > 0
+        ? UploadAddress.UploadHosts
+        : [UploadAddress.UploadHosts[0]];
+      const host = uploadHosts[uploadAttempt % uploadHosts.length];
+      const uploadImgUrl = `https://${host}/upload/v1/${UploadAddress.StoreInfos[0].StoreUri}`;
+      logger.info(`开始上传图片 (第 ${uploadAttempt + 1}/3 次)`);
+      const imageUploadRes = await axios.post(
+        uploadImgUrl,
+        fileData,
+        {
+          headers: {
+            Authorization: UploadAddress.StoreInfos[0].Auth,
+            'Content-Crc32': imageCrc32,
+            'Content-Type': 'application/octet-stream',
+          },
+          timeout: 25000,
+        }
+      );
+      if (imageUploadRes.data.code !== 2000) {
+        throw new APIException(EX.API_REQUEST_FAILED, imageUploadRes.data.message || '上传文件失败');
+      }
+      logger.info('图片上传成功，提交上传');
+      const commitImgParams = {
+        Action: 'CommitImageUpload',
+        FileSize: fileData.length,
+        ServiceId: 'tb4s082cfz',
+        Version: '2018-08-01',
+      };
+      const commitImgContent = {
+        SessionKey: UploadAddress.SessionKey,
+      };
+      const commitImgHead = await generateAWSAuthorizationHeader(
+        uploadAuth.access_key_id,
+        uploadAuth.secret_access_key,
+        uploadAuth.session_token,
+        'cn-north-1',
+        'imagex',
+        'POST',
+        commitImgParams,
+        commitImgContent,
+      );
+      const commitImg = await axios.post(
+        'https://imagex.bytedanceapi.com/?' + new URLSearchParams(commitImgParams as any).toString(),
+        commitImgContent,
+        {
+          headers: {
+            ...commitImgHead,
+            'Content-Type': 'application/json',
+          },
+          timeout: 20000,
+        }
+      );
+      if (commitImg.data?.['Response ']?.hasOwnProperty('Error')) {
+        throw new APIException(EX.API_REQUEST_FAILED, commitImg.data['Response ']['Error']['Message']);
+      }
+      imageUri = commitImg.data.Result.Results[0].Uri;
+      break;
+    } catch (uploadErr: any) {
+      lastUploadStageError = uploadErr;
+      logger.warn(`图片上传阶段失败 (第 ${uploadAttempt + 1}/3 次)`);
     }
-  );
-
-  if (imageUploadRes.data.code !== 2000) {
-    throw new APIException(EX.API_REQUEST_FAILED, imageUploadRes.data.message || '上传文件失败');
   }
-
-  logger.info('图片上传成功，提交上传');
-
-  // 提交上传
-  const commitImgParams = {
-    Action: 'CommitImageUpload',
-    FileSize: fileData.length,
-    ServiceId: 'tb4s082cfz',
-    Version: '2018-08-01',
-  };
-
-  const commitImgContent = {
-    SessionKey: UploadAddress.SessionKey,
-  };
-
-  const commitImgHead = await generateAWSAuthorizationHeader(
-    uploadAuth.access_key_id,
-    uploadAuth.secret_access_key,
-    uploadAuth.session_token,
-    'cn-north-1',
-    'imagex',
-    'POST',
-    commitImgParams,
-    commitImgContent,
-  );
-
-  const commitImg = await axios.post(
-    'https://imagex.bytedanceapi.com/?' + new URLSearchParams(commitImgParams as any).toString(),
-    commitImgContent,
-    {
-      headers: {
-        ...commitImgHead,
-        'Content-Type': 'application/json',
-      },
-      timeout: 30000,
-    }
-  );
-
-  if (commitImg.data?.['Response ']?.hasOwnProperty('Error')) {
-    throw new APIException(EX.API_REQUEST_FAILED, commitImg.data['Response ']['Error']['Message']);
+  if (!imageUri) {
+    throw lastUploadStageError || new APIException(EX.API_REQUEST_FAILED, '上传文件超时或失败');
   }
-
-  const imageUri = commitImg.data.Result.Results[0].Uri;
-  logger.info(`文件上传成功，URI: ${imageUri}`);
+  logger.info("文件上传成功");
 
   return {
     image_uri: imageUri,
@@ -633,13 +657,13 @@ async function generateAWSAuthorizationHeader(
 export function checkResult(result: AxiosResponse) {
   const { ret, errmsg, data } = result.data;
   if (!_.isFinite(Number(ret))) return result.data;
-  if (ret === '0') return data;
+  if (String(ret) === '0') return data;
   
   // 记录详细的API错误信息
-  logger.error(`❌ [API错误] 错误码: ${ret}, 错误消息: ${errmsg}`);
+  logger.error(`❌ [API错误] 错误码: ${ret}`);
   
   // 即梦积分不足错误码：5000 (旧) 或 1006 (新)
-  if (ret === '5000' || ret === '1006')
+  if (String(ret) === '5000' || String(ret) === '1006')
     throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[积分不足]: ${errmsg} (错误码: ${ret})`);
 
   // 上游风控拦截：Seedance 2.0 pro/fast 等链路要求携带浏览器端 SDK 生成的 a_bogus/msToken 签名

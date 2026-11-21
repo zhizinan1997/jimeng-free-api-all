@@ -1,0 +1,27 @@
+/* Account pool additions reuse the dashboard's existing tokens and components. */
+#tab-accounts .pool-sidebar { display: grid; gap: 18px; }
+#tab-accounts fieldset { border: 0; min-width: 0; }
+#tab-accounts .pool-summary-value { font-size: 20px; overflow-wrap: anywhere; }
+#tab-accounts .stat-note { line-height: 1.6; overflow-wrap: anywhere; }
+#tab-accounts .pool-detail { margin-top: 7px; font-size: 12px; color: var(--text-soft); line-height: 1.6; overflow-wrap: anywhere; white-space: normal; }
+#tab-accounts .pool-warning { color: var(--yellow); }
+#tab-accounts .pool-error { color: var(--red); }
+#tab-accounts .pool-record-panel { margin-top: 20px; }
+#tab-accounts .pool-pagination { padding: 0 16px 18px; font-size: 12px; color: var(--text-soft); }
+#tab-accounts .pool-account-table { min-width: 930px; }
+#tab-accounts td { vertical-align: top; }
+#tab-accounts .pool-wrap { white-space: normal; min-width: 160px; max-width: 320px; overflow-wrap: anywhere; }
+#tab-accounts .pool-id { display: block; margin-top: 5px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; color: var(--text-faint); overflow-wrap: anywhere; white-space: normal; }
+#tab-accounts .pool-order-actions { display: flex; flex-direction: column; gap: 5px; }
+#tab-accounts .pool-order-actions .btn { padding: 5px 8px; font-size: 11px; }
+#tab-accounts .pool-drag { cursor: grab; }
+#tab-accounts .pool-drag:active { cursor: grabbing; }
+#tab-accounts tr.pool-drop-target { outline: 2px solid var(--primary); outline-offset: -2px; }
+#tab-accounts .row-actions { flex-wrap: wrap; max-width: 160px; }
+#tab-accounts button:focus-visible, #tab-accounts [tabindex]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+#pool-message { margin: 0 0 18px; }
+@media (max-width: 640px) {
+  #tab-accounts .panel-head { flex-wrap: wrap; }
+  #tab-accounts .pool-summary-value { font-size: 17px; }
+  #tab-accounts .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

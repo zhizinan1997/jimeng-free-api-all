@@ -1,8 +1,10 @@
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import { request } from "./core.ts";
+import { TEXT_MODELS, TextChatRequestError, isTextModel } from "@/lib/text-chat-request.ts";
+import { TEXT_MODEL_POSITIONING } from "@/lib/text-chat-identity.ts";
 
-export type JimengModelType = "image" | "video";
+export type JimengModelType = "image" | "video" | "audio" | "text";
 
 export interface JimengModelConfig {
   id: string;
@@ -11,8 +13,8 @@ export interface JimengModelConfig {
   description: string;
   modelReqKey: string;
   aliases?: string[];
-  defaultResolution: string;
-  supportedResolutions: string[];
+  defaultResolution?: string;
+  supportedResolutions?: string[];
   benefits?: Record<string, string>;
   defaultBenefit?: string;
   benefitCountByResolution?: Record<string, number>;
@@ -179,6 +181,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
     supportsLongDuration: true,
+    defaultDuration: 10,
+    supportedDurations: Array.from({ length: 26 }, (_, i) => i + 5),
     source: "static",
   },
   {
@@ -347,6 +351,39 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
   },
 ];
 
+const AUDIO_DURATIONS = Array.from({ length: 300 }, (_, i) => i + 1);
+
+const STATIC_AUDIO_MODELS: JimengModelConfig[] = [
+  {
+    id: "jimeng-audio-seedaudio-1.0",
+    type: "audio",
+    name: "SeedAudio 1.0",
+    description: "Jimeng SeedAudio 1.0 audio generation model",
+    modelReqKey: "seed_audio",
+    aliases: ["seedaudio", "seedaudio-1.0"],
+    defaultResolution: "mp3",
+    supportedResolutions: ["mp3"],
+    defaultBenefit: "dreamina_seed_audio",
+    benefits: { mp3: "dreamina_seed_audio" },
+    supportsLongDuration: true,
+    defaultDuration: 5,
+    supportedDurations: AUDIO_DURATIONS,
+    source: "static",
+  },
+];
+
+
+const STATIC_TEXT_MODELS: JimengModelConfig[] = TEXT_MODELS.map(model => ({
+  id: model.id,
+  type: "text",
+  name: model.name,
+  description: TEXT_MODEL_POSITIONING[model.id] ?? `即梦 Agent ${model.name} 纯文字对话模型`,
+  modelReqKey: model.modelReqKey,
+  aliases: [model.modelReqKey, model.name],
+  source: "static",
+}));
+
+
 const dynamicCache = new Map<
   string,
   {
@@ -359,7 +396,8 @@ function cloneModelConfig(model: JimengModelConfig): JimengModelConfig {
   return {
     ...model,
     aliases: model.aliases ? [...model.aliases] : undefined,
-    supportedResolutions: [...model.supportedResolutions],
+    supportedDurations: model.supportedDurations ? [...model.supportedDurations] : undefined,
+    supportedResolutions: model.supportedResolutions ? [...model.supportedResolutions] : undefined,
     benefits: model.benefits ? { ...model.benefits } : undefined,
     benefitCountByResolution: model.benefitCountByResolution
       ? { ...model.benefitCountByResolution }
@@ -368,7 +406,7 @@ function cloneModelConfig(model: JimengModelConfig): JimengModelConfig {
 }
 
 export function getStaticModelConfigs(type?: JimengModelType) {
-  const models = [...STATIC_IMAGE_MODELS, ...STATIC_VIDEO_MODELS];
+  const models = [...STATIC_IMAGE_MODELS, ...STATIC_VIDEO_MODELS, ...STATIC_AUDIO_MODELS, ...STATIC_TEXT_MODELS];
   return models
     .filter((model) => !type || model.type === type)
     .map(cloneModelConfig);
@@ -531,7 +569,7 @@ function collectVideoBenefits(candidate: any, resolutions: string[], staticConfi
 
 function parseImageModel(candidate: any): JimengModelConfig | null {
   const modelReqKey = candidate.model_req_key || candidate.modelReqKey;
-  if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
+  if (typeof modelReqKey !== "string" || !modelReqKey.trim() || isTextModel(modelReqKey)) return null;
 
   const staticConfig = getStaticModelConfig(modelReqKey, "image");
   const name =
@@ -574,7 +612,7 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
 
 function parseVideoModel(candidate: any): JimengModelConfig | null {
   const modelReqKey = candidate.model_req_key || candidate.modelReqKey;
-  if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
+  if (typeof modelReqKey !== "string" || !modelReqKey.trim() || isTextModel(modelReqKey)) return null;
 
   const staticConfig = getStaticModelConfig(modelReqKey, "video");
   const name =
@@ -627,8 +665,9 @@ function uniqueModels(models: JimengModelConfig[]) {
   return [...byKey.values()];
 }
 
-async function fetchImageModelConfigs(refreshToken: string, refresh = false) {
+async function fetchImageModelConfigs(refreshToken: string, refresh = false, cookie?: string) {
   const result = await request("post", "/mweb/v1/get_common_config", refreshToken, {
+    cookie,
     params: {
       web_version: WEB_VERSION,
       da_version: DRAFT_VERSION,
@@ -649,8 +688,9 @@ async function fetchImageModelConfigs(refreshToken: string, refresh = false) {
   );
 }
 
-async function fetchVideoModelConfigs(refreshToken: string, refresh = false) {
+async function fetchVideoModelConfigs(refreshToken: string, refresh = false, cookie?: string) {
   const result = await request("post", "/mweb/v1/video_generate/get_common_config", refreshToken, {
+    cookie,
     params: {
       web_version: WEB_VERSION,
       da_version: DRAFT_VERSION,
@@ -673,7 +713,7 @@ async function fetchVideoModelConfigs(refreshToken: string, refresh = false) {
   );
 }
 
-async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
+async function fetchDynamicModelConfigs(refreshToken: string, refresh = false, cookie?: string) {
   const now = Date.now();
   const cacheKey = util.md5(refreshToken).slice(0, 12);
   const cached = dynamicCache.get(cacheKey);
@@ -682,8 +722,8 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
   }
 
   const results = await Promise.allSettled([
-    fetchImageModelConfigs(refreshToken, refresh),
-    fetchVideoModelConfigs(refreshToken, refresh),
+    fetchImageModelConfigs(refreshToken, refresh, cookie),
+    fetchVideoModelConfigs(refreshToken, refresh, cookie),
   ]);
   const models = results.flatMap((result) =>
     result.status === "fulfilled" ? result.value : []
@@ -709,7 +749,7 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
   return models.map(cloneModelConfig);
 }
 
-function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: JimengModelConfig[]) {
+export function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: JimengModelConfig[]) {
   const byId = new Map<string, JimengModelConfig>();
   const byReqKey = new Map<string, JimengModelConfig>();
 
@@ -728,6 +768,8 @@ function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: Jim
       ...(staticMatch || {}),
       ...model,
       id: staticMatch?.id || model.id,
+      supportedDurations: model.supportedDurations?.length ? model.supportedDurations : staticMatch?.supportedDurations,
+      defaultDuration: model.defaultDuration ?? staticMatch?.defaultDuration,
       supportedResolutions:
         model.supportedResolutions?.length
           ? model.supportedResolutions
@@ -748,14 +790,15 @@ function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: Jim
 
 export async function listModelConfigs(
   refreshToken?: string,
-  options: { refresh?: boolean; type?: JimengModelType } = {}
+  options: { refresh?: boolean; type?: JimengModelType } = {},
+  cookie?: string
 ) {
   const staticModels = getStaticModelConfigs(options.type);
   let dynamicModels: JimengModelConfig[] = [];
 
-  if (refreshToken) {
+  if (refreshToken && options.type !== "text") {
     try {
-      dynamicModels = await fetchDynamicModelConfigs(refreshToken, options.refresh);
+      dynamicModels = await fetchDynamicModelConfigs(refreshToken, options.refresh, cookie);
     } catch (error) {
       logger.warn(`Using static Jimeng model config: ${error.message}`);
     }
@@ -769,9 +812,18 @@ export async function listModelConfigs(
 export async function resolveModelConfig(
   modelIdOrReqKey: string,
   type: JimengModelType,
-  refreshToken?: string
+  refreshToken?: string,
+  cookie?: string
 ) {
-  const models = await listModelConfigs(refreshToken, { type });
+  if (type === "text") {
+    const model = getStaticModelConfig(modelIdOrReqKey, "text");
+    if (!model) throw new TextChatRequestError("不支持的文字模型，请使用 /v1/models?type=text 返回的模型");
+    return model;
+  }
+  if (isTextModel(modelIdOrReqKey)) {
+    throw new TextChatRequestError("文字模型不能用于图片、视频或音频生成");
+  }
+  const models = await listModelConfigs(refreshToken, { type }, cookie);
   const matched = models.find(
       (model) =>
         model.id === modelIdOrReqKey ||
@@ -802,8 +854,10 @@ export function toOpenAIModel(model: JimengModelConfig) {
     description: model.description,
     name: model.name,
     model_req_key: model.modelReqKey,
-    supported_resolutions: model.supportedResolutions,
-    default_resolution: model.defaultResolution,
+    ...(model.type === "text" ? {} : {
+      supported_resolutions: model.supportedResolutions,
+      default_resolution: model.defaultResolution,
+    }),
     source: model.source || "static",
   };
 }
@@ -811,5 +865,8 @@ export function toOpenAIModel(model: JimengModelConfig) {
 export const resolveImageModelConfig = (modelIdOrReqKey: string, refreshToken?: string) =>
   resolveModelConfig(modelIdOrReqKey, "image", refreshToken);
 
-export const resolveVideoModelConfig = (modelIdOrReqKey: string, refreshToken?: string) =>
-  resolveModelConfig(modelIdOrReqKey, "video", refreshToken);
+export const resolveVideoModelConfig = (modelIdOrReqKey: string, refreshToken?: string, cookie?: string) =>
+  resolveModelConfig(modelIdOrReqKey, "video", refreshToken, cookie);
+
+export const resolveAudioModelConfig = (modelIdOrReqKey: string, refreshToken?: string, cookie?: string) =>
+  resolveModelConfig(modelIdOrReqKey, "audio", refreshToken, cookie);

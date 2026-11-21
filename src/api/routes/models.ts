@@ -12,10 +12,10 @@ export default {
                 ? await resolveAuthorization(request.headers.authorization)
                 : undefined;
             const refresh = request.query.refresh === 'true' || request.query.refresh === '1';
-            const type = request.query.type === 'image' || request.query.type === 'video'
+            const type = request.query.type === 'image' || request.query.type === 'video' || request.query.type === 'audio' || request.query.type === 'text'
                 ? request.query.type
                 : undefined;
-            const models = await listModelConfigs(credential?.token, { refresh, type });
+            const models = await listModelConfigs(credential?.token, { refresh, type }, credential?.cookie);
 
             return {
                 data: models.map(toOpenAIModel)
